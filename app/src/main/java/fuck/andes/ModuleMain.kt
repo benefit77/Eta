@@ -11,8 +11,10 @@ class ModuleMain : XposedModule() {
     private var systemServerInstalled = false
     private var systemUiInstalled = false
     private var googleInstalled = false
+    private var currentProcessName: String? = null
 
     override fun onModuleLoaded(param: ModuleLoadedParam) {
+        currentProcessName = param.processName
         logger.debug(
             "模块已加载 process=${param.processName}, framework=$frameworkName($frameworkVersionCode), api=$apiVersion"
         )
@@ -27,18 +29,24 @@ class ModuleMain : XposedModule() {
     override fun onPackageReady(param: PackageReadyParam) {
         when (param.packageName) {
             ModuleConfig.SYSTEM_UI_PACKAGE -> {
-                if (!systemUiInstalled) {
+                if (!systemUiInstalled && currentProcessName == ModuleConfig.SYSTEM_UI_PACKAGE) {
                     systemUiInstalled = true
                     SystemUiHooks.install(this, logger, param.classLoader)
                 }
             }
 
             ModuleConfig.GOOGLE_PACKAGE -> {
-                if (!googleInstalled) {
+                if (!googleInstalled && isCurrentPackageProcess(ModuleConfig.GOOGLE_PACKAGE)) {
                     googleInstalled = true
+                    GoogleEligibilityHooks.install(this, logger, param.classLoader)
                     GoogleAppHooks.install(this, logger, param.classLoader)
                 }
             }
         }
+    }
+
+    private fun isCurrentPackageProcess(packageName: String): Boolean {
+        val processName = currentProcessName ?: return false
+        return processName == packageName || processName.startsWith("$packageName:")
     }
 }

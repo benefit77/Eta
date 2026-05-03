@@ -12,6 +12,9 @@ ColorOS 的小布助手极其难用、极其蠢，但系统偏偏把它塞进了
 
 1. **电源键长按** —— 不再走小布，直接唤起 Google Gemini。模块接管入口后优先走 Google `voiceinteraction`；如果"默认数字助理应用"不是 Google，会自动恢复绑定，并在 `voiceinteraction` 重建期间做一次性延迟重试，避免第一次长按只打开 Google App 或完全无响应。
 2. **手势条长按** —— 拦截小布识屏，改为触发一圈即搜。同时在 Google 进程内伪装设备为 Samsung S24 Ultra，以放开一圈即搜能力。
+3. **Google 设备资格补齐** —— 在 Google App 进程内补齐 `ro.opa.eligible_device` 和 Google Experience feature，减少非完整 GMS 机型上 Gemini/Assistant 能力被降级的概率。
+4. **锁屏语音补偿** —— Gemini 浮窗从锁屏唤起时，如果 Google 没有稳定进入语音识别态，模块会短延迟补发一次 `ACTION_VOICE_COMMAND`，相当于自动点麦克风。
+5. **息屏热词自愈** —— Google 在部分 ColorOS 场景会在息屏后停掉软件热词检测，模块会在息屏完成后短延迟恢复已有的 Google hotword session，避免“开机第一次能唤醒，之后息屏唤不醒”。
 
 ## 实现原理
 
@@ -22,6 +25,7 @@ ColorOS 的小布助手极其难用、极其蠢，但系统偏偏把它塞进了
 - **电源键接管**：Hook `PhoneWindowManagerExtImpl$OplusSpeechHandler.handleMessage()` 拦截系统分发给小布的唤醒消息（`what == 0x3F3`），接管电源键长按的最终入口。
 - **数字助理配置修复**：开机、解锁、切用户时，通过 `AssistantManager` 低频校正 `android.app.role.ASSISTANT` 及相关 secure settings，自动校正并尽量维持 Google 为默认助理。
 - **唤起逻辑优化**：优先使用 `VoiceInteractionManagerService` 拉起 Google `voiceinteraction`。如果助理配置刚恢复而服务还没 ready，会在系统 handler 上做有限次的延迟重试补偿。
+- **息屏热词自愈**：Hook `PhoneWindowManager.screenTurnedOff()`，在默认显示息屏后短延迟检查 Google 的 `SoftwareTrustedHotwordDetectorSession`。只有已有 `mSoftwareCallback` 且当前未 running 时，才恢复 `startListeningFromMicLocked()`。
 - **一圈即搜支持**：强制启用 `ContextualSearchManagerService`，将包名指向 Google App，并放行 `SystemUI` 的调用权限。
 
 **SystemUI**
@@ -30,7 +34,9 @@ ColorOS 的小布助手极其难用、极其蠢，但系统偏偏把它塞进了
 
 **Google App**
 
-伪装设备为 Samsung S24 Ultra，使 Google 启用一圈即搜能力。
+伪装设备为 Samsung S24 Ultra，使 Google 启用一圈即搜能力；同时拦截 `SystemProperties` 和 `PackageManager.hasSystemFeature()` 的关键查询，让 Google App 看到 `ro.opa.eligible_device=true`、`GOOGLE_BUILD` 与 `GOOGLE_EXPERIENCE`。这对应现成 Google App Magisk 模块和 OpenGApps 常用的 OPA eligibility 做法，但限定在 Google App 进程内，不改系统文件。
+
+锁屏唤起 Gemini 浮窗后，Google 偶发只显示输入框、不启动录音。模块在 `FloatyActivity.onResume()` 后检查锁屏状态，并带冷却地补发一次 `ACTION_VOICE_COMMAND`，避免用户还要手动点麦克风。
 
 ## 功耗与开销
 
@@ -41,6 +47,7 @@ ColorOS 的小布助手极其难用、极其蠢，但系统偏偏把它塞进了
 - 默认助理配置检查带 15 秒冷却，避免重复查 `RoleManager` 和 `Settings.Secure`
 - 成功路径默认静默（`ENABLE_VERBOSE_LOGS=false`）
 - 只有在默认助理刚恢复但 `voiceinteraction` 尚未完成重建时，才会追加少量一次性延迟重试，成功后立即失效，不留后台负担
+- 息屏热词自愈只响应系统息屏事件，每次最多 3 个短延迟任务；没有现成 Google hotword callback 时直接跳过，不轮询、不创建额外常驻任务
 
 ## 预期行为
 
@@ -56,9 +63,11 @@ ColorOS 的小布助手极其难用、极其蠢，但系统偏偏把它塞进了
 ModuleMain.kt              模块入口，按进程分发 Hook
 PowerHooks.kt              电源键长按语音入口接管与延迟重试
 AssistantManager.kt        默认助理绑定校正与 voiceinteraction 自动恢复
+HotwordSelfHealHooks.kt    息屏后 Google 软件热词检测自愈
 ContextualSearchHooks.kt   补启动 contextual_search 服务并接管包名/权限
 SystemUiHooks.kt           手势条长按识屏拦截，转发一圈即搜
 GoogleAppHooks.kt          Google 进程内设备伪装
+GoogleEligibilityHooks.kt  Google 进程内资格属性与 feature 补齐
 SystemServerHooks.kt       system_server Hook 总入口
 HookSupport.kt             反射与 Hook 工具方法
 ModuleConfig.kt            常量集中管理

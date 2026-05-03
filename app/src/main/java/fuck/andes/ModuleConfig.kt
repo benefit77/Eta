@@ -31,4 +31,10 @@ internal object ModuleConfig {
     const val CIRCLE_TO_SEARCH_ENTRYPOINT = 2
     const val OP_LUS_ASSIST_MESSAGE_WHAT = 0x3F3
     const val INTERCEPT_DEDUP_WINDOW_MS = 1_000L
+
+    const val SPOOF_MANUFACTURER = "samsung"
+    const val SPOOF_BRAND = "samsung"
+    const val SPOOF_MODEL = "SM-S928B"
+    const val SPOOF_PRODUCT = "e3s"
+    const val SPOOF_DEVICE = "e3s"
 }

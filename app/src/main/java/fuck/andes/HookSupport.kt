@@ -6,6 +6,7 @@ import android.content.Intent
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedInterface.ExceptionMode
 import io.github.libxposed.api.XposedModule
+import io.github.libxposed.api.error.HookFailedError
 import java.lang.reflect.Executable
 import java.lang.reflect.Field
 import java.lang.reflect.Method
@@ -54,13 +55,14 @@ internal object HookSupport {
         description: String,
         hooker: (XposedInterface.Chain) -> Any?
     ) {
-        runCatching {
+        try {
             module.hook(executable)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .intercept { chain -> hooker(chain) }
-        }.onSuccess {
             logger.debug("已安装 Hook: $description")
-        }.onFailure { throwable ->
+        } catch (error: HookFailedError) {
+            throw error
+        } catch (throwable: Throwable) {
             logger.error("安装 Hook 失败: $description", throwable)
         }
     }

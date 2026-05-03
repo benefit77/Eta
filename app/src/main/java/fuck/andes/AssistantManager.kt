@@ -2,6 +2,7 @@ package fuck.andes
 
 import android.app.KeyguardManager
 import android.app.role.RoleManager
+import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.Context
 import android.os.Bundle
@@ -16,11 +17,8 @@ import java.util.function.Consumer
 
 internal object AssistantManager {
     private const val BOOT_COMPLETED_PHASE = 1_000
-    private const val SHOW_WITH_ASSIST = 1
-    private const val SHOW_WITH_SCREENSHOT = 1 shl 1
-    private const val SHOW_SOURCE_ASSIST_GESTURE = 1 shl 2
-    private const val DEFAULT_SHOW_FLAGS =
-        SHOW_WITH_ASSIST or SHOW_WITH_SCREENSHOT or SHOW_SOURCE_ASSIST_GESTURE
+    private const val SHOW_SOURCE_PUSH_TO_TALK = 1 shl 5
+    private const val DEFAULT_SHOW_FLAGS = SHOW_SOURCE_PUSH_TO_TALK
     private const val CONFIG_VERIFY_COOLDOWN_MS = 15_000L
     private const val ROLE_OPERATION_TIMEOUT_MS = 1_500L
     private const val REFRESH_COOLDOWN_MS = 5_000L
@@ -210,6 +208,58 @@ internal object AssistantManager {
         }
     }
 
+    fun resumeSoftwareHotwordDetection(
+        logger: ModuleLogger,
+        source: String,
+        logFailures: Boolean = false
+    ): Boolean {
+        val stub = voiceInteractionManagerStub ?: run {
+            logShowSessionFailure(
+                logger,
+                "${source}_hotword_stub_missing",
+                "$source: mServiceStub 尚未就绪，无法恢复软件热词检测",
+                logFailures
+            )
+            return false
+        }
+
+        return runCatching {
+            synchronized(stub) {
+                val impl = HookSupport.getFieldValue(stub, "mImpl") ?: return@synchronized false
+                val component = HookSupport.getFieldValue(impl, "mComponent") as? ComponentName
+                if (component?.packageName != ModuleConfig.GOOGLE_PACKAGE) {
+                    return@synchronized false
+                }
+
+                val session = findSoftwareHotwordSession(impl) ?: return@synchronized false
+                val running = HookSupport.getFieldValue(
+                    session,
+                    "mPerformingSoftwareHotwordDetection"
+                ) as? Boolean ?: false
+                if (running) {
+                    return@synchronized false
+                }
+
+                val callback = HookSupport.getFieldValue(session, "mSoftwareCallback")
+                    ?: return@synchronized false
+                val startListeningMethod = impl.javaClass.declaredMethods.firstOrNull {
+                    it.name == "startListeningFromMicLocked" && it.parameterTypes.size == 2
+                }?.apply { isAccessible = true } ?: return@synchronized false
+
+                startListeningMethod.invoke(impl, null, callback)
+                true
+            }
+        }.getOrElse { throwable ->
+            logShowSessionFailure(
+                logger,
+                "${source}_hotword_resume_failed",
+                "$source: 恢复软件热词检测失败: ${throwable.message}",
+                logFailures
+            )
+            false
+        }
+    }
+
     private fun ensureGoogleAssistantConfiguredForUser(
         context: Context,
         userId: Int,
@@ -232,7 +282,7 @@ internal object AssistantManager {
         }
 
         if (forceRefresh && now - lastForcedRefreshUptime < REFRESH_COOLDOWN_MS) {
-            return hasGoogleAssistantRole(context, userId) && hasGoogleAssistantSettings(context, userId)
+            return roleOk && settingsOk
         }
         if (forceRefresh) {
             lastForcedRefreshUptime = now
@@ -579,6 +629,25 @@ internal object AssistantManager {
     private fun captureVoiceInteractionManagerStub(serviceInstance: Any) {
         val stub = HookSupport.getFieldValue(serviceInstance, "mServiceStub") ?: return
         voiceInteractionManagerStub = stub
+    }
+
+    private fun findSoftwareHotwordSession(impl: Any): Any? {
+        val connection = HookSupport.getFieldValue(impl, "mHotwordDetectionConnection") ?: return null
+        val detectorSessions = HookSupport.getFieldValue(connection, "mDetectorSessions") ?: return null
+        val sizeMethod = HookSupport.findMethod(detectorSessions.javaClass, "size") ?: return null
+        val valueAtMethod = HookSupport.findMethod(
+            detectorSessions.javaClass,
+            "valueAt",
+            Int::class.javaPrimitiveType!!
+        ) ?: return null
+        val size = sizeMethod.invoke(detectorSessions) as? Int ?: return null
+        repeat(size) { index ->
+            val session = valueAtMethod.invoke(detectorSessions, index) ?: return@repeat
+            if (session.javaClass.name == "com.android.server.voiceinteraction.SoftwareTrustedHotwordDetectorSession") {
+                return session
+            }
+        }
+        return null
     }
 
     private fun markVerified(userId: Int, now: Long) {
