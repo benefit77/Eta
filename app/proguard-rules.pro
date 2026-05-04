@@ -28,6 +28,7 @@
     boolean systemServerInstalled;
     boolean systemUiInstalled;
     boolean googleInstalled;
+    boolean colorDirectInstalled;
     void onModuleLoaded(io.github.libxposed.api.XposedModuleInterface$ModuleLoadedParam);
     void onSystemServerStarting(io.github.libxposed.api.XposedModuleInterface$SystemServerStartingParam);
     void onPackageReady(io.github.libxposed.api.XposedModuleInterface$PackageReadyParam);

@@ -11,6 +11,7 @@ class ModuleMain : XposedModule() {
     private var systemServerInstalled = false
     private var systemUiInstalled = false
     private var googleInstalled = false
+    private var colorDirectInstalled = false
     private var currentProcessName: String? = null
 
     override fun onModuleLoaded(param: ModuleLoadedParam) {
@@ -40,6 +41,13 @@ class ModuleMain : XposedModule() {
                     googleInstalled = true
                     GoogleEligibilityHooks.install(this, logger, param.classLoader)
                     GoogleAppHooks.install(this, logger, param.classLoader)
+                }
+            }
+
+            ModuleConfig.COLOR_DIRECT_PACKAGE -> {
+                if (!colorDirectInstalled && isCurrentPackageProcess(ModuleConfig.COLOR_DIRECT_PACKAGE)) {
+                    colorDirectInstalled = true
+                    ColorDirectHooks.install(this, logger, param.classLoader)
                 }
             }
         }

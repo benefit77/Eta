@@ -89,7 +89,7 @@ internal object ContextualSearchHooks {
             "ContextualSearchManagerService.enforcePermission"
         ) { chain ->
             val functionName = chain.getArg(0) as? String
-            if (functionName == "startContextualSearch" && isSystemUiCaller(chain.getThisObject())) {
+            if (functionName == "startContextualSearch" && isAllowedContextualSearchCaller(chain.getThisObject())) {
                 null
             } else {
                 chain.proceed()
@@ -97,12 +97,13 @@ internal object ContextualSearchHooks {
         }
     }
 
-    private fun isSystemUiCaller(serviceInstance: Any): Boolean {
+    private fun isAllowedContextualSearchCaller(serviceInstance: Any): Boolean {
         val context = HookSupport.invokeNoArgs(serviceInstance, "getContext") as? Context
             ?: HookSupport.getFieldValue(serviceInstance, "mContext") as? Context
             ?: return false
         val packages = context.packageManager.getPackagesForUid(Binder.getCallingUid()) ?: return false
-        return packages.contains(ModuleConfig.SYSTEM_UI_PACKAGE)
+        return packages.contains(ModuleConfig.SYSTEM_UI_PACKAGE) ||
+            packages.contains(ModuleConfig.COLOR_DIRECT_PACKAGE)
     }
 
     private fun ensureContextualSearchService(
