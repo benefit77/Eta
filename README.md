@@ -2,7 +2,7 @@
 
 干掉 ColorOS 小布助手。电源键长按唤起 Google Gemini，手势条长按和双指识屏换成一圈即搜。
 
-> 基于 [libxposed API 101](https://github.com/libxposed/api) 的 Xposed 模块，极简干净。
+> 基于 [libxposed API 102](https://github.com/libxposed/api) 的 Xposed 模块，极简干净。
 
 ## 痛点
 
