@@ -38,7 +38,7 @@ internal object PowerHooks {
 
     fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
         // 当前机型实测证明 OplusSpeechHandler 是必要路径。
-        // 开关在拦截回调里即时判断，关闭则走原逻辑，无需重启进程。
+        // 开关在拦截回调里判断，关闭则走原逻辑。
         hookOplusSpeechHandler(module, logger, classLoader)
     }
 
@@ -67,7 +67,7 @@ internal object PowerHooks {
                 return@hookMethod chain.proceed()
             }
 
-            // 即时生效：开关关闭则走原逻辑（小布），不拦截。
+            // 开关关闭则走原逻辑（小布），不拦截。
             if (!Prefs.isEnabled(Prefs.Keys.POWER_KEY_TAKEOVER)) {
                 return@hookMethod chain.proceed()
             }

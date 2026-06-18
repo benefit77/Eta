@@ -84,7 +84,7 @@ internal object GoogleAppHooks {
     }
 
     private fun scheduleVoiceCommand(activity: Activity, logger: ModuleLogger) {
-        // 即时生效：开关关闭则不补发语音输入。
+        // 开关关闭则不补发语音输入。
         if (!Prefs.isEnabled(Prefs.Keys.LOCKSCREEN_VOICE_COMMAND)) return
         val now = SystemClock.uptimeMillis()
         if (now - lastVoiceCommandUptime < VOICE_COMMAND_COOLDOWN_MS) {

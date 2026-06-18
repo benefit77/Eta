@@ -52,7 +52,7 @@ internal object ColorDirectHooks {
             method,
             "CollectInfoActivity.M"
         ) { chain ->
-            // 即时生效：开关关闭则走原双指识屏逻辑。
+            // 开关关闭则走原双指识屏逻辑。
             if (!Prefs.isEnabled(Prefs.Keys.DOUBLE_FINGER_CIRCLE_TO_SEARCH)) {
                 return@hookMethod chain.proceed()
             }

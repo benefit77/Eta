@@ -1,19 +1,17 @@
 package fuck.andes.config
 
-import android.content.Context
 import android.content.SharedPreferences
 import io.github.libxposed.service.XposedService
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 模块配置中枢。
  *
  * - Hook 进程（system_server / SystemUI / Google / ColorDirect）在模块加载时调用
- *   [attachRemote]，缓存框架提供的只读 [SharedPreferences]；之后所有拦截回调用
- *   [isEnabled] 读最新值，即时生效，无需重启进程。
- * - UI 进程（模块自身）通过 [sharedPreferencesForUi] 拿到可写的 [SharedPreferences]
- *   （XposedService.getRemotePreferences），写入经 LSPosed 数据库同步到各 hook 进程。
- *   XposedService 未就绪时回退本地 SharedPreferences，UI 仍可用但不会同步到 hook。
+ *   [attachRemote]，缓存框架提供的只读 [SharedPreferences]；之后所有拦截回调用 [isEnabled]
+ *   读取当前进程持有的 remote preferences。
+ * - UI 进程（模块自身）通过 [remotePreferencesForUi] 拿到可写的 [SharedPreferences]
+ *   （XposedService.getRemotePreferences）。XposedService 未就绪时不提供本地 fallback，
+ *   避免 UI 显示已修改但 hook 进程无法看到。
  *
  * 基于 libxposed API 102 的 [io.github.libxposed.api.XposedInterface.getRemotePreferences]
  * 与 service 102 的 [XposedService.getRemotePreferences]，两端共用同一 group。
@@ -22,9 +20,6 @@ internal object Prefs {
 
     /** 远程配置组名，UI 写入与 Hook 读取必须一致。 */
     const val GROUP = "fuck_andes_prefs"
-
-    /** 本地回退文件名（XposedService 未就绪时用）。 */
-    private const val LOCAL_FALLBACK = "fuck_andes_prefs_local"
 
     /** 所有功能开关 key。默认值统一为 true，保持与历史硬编码行为一致。 */
     object Keys {
@@ -65,13 +60,11 @@ internal object Prefs {
     }
 
     /**
-     * UI 进程获取可写的 SharedPreferences。
+     * UI 进程获取可写的 RemotePreferences。
      *
-     * 优先用 [XposedService.getRemotePreferences]（commit 同步等待 binder 提交到 LSPosed
-     * 数据库，失败返回 false；详见 RemotePreferences.commit 源码）；
-     * service 未就绪时回退本地 [Context.MODE_PRIVATE]，UI 仍可操作但不会同步到 hook。
+     * [XposedService.getRemotePreferences] 的 commit 会同步等待 binder 提交到 LSPosed
+     * 数据库，失败返回 false；service 未就绪时返回 null，让 UI 保持不可写。
      */
-    fun sharedPreferencesForUi(context: Context, service: XposedService?): SharedPreferences =
+    fun remotePreferencesForUi(service: XposedService?): SharedPreferences? =
         runCatching { service?.getRemotePreferences(GROUP) }.getOrNull()
-            ?: context.getSharedPreferences(LOCAL_FALLBACK, Context.MODE_PRIVATE)
 }

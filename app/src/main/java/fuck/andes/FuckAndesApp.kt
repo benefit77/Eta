@@ -1,6 +1,8 @@
 package fuck.andes
 
 import android.app.Application
+import android.os.Handler
+import android.os.Looper
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import java.util.concurrent.CopyOnWriteArraySet
@@ -11,7 +13,7 @@ import java.util.concurrent.CopyOnWriteArraySet
  * 在进程启动时注册 [XposedServiceHelper] 监听器，框架会通过 XposedProvider 推送 binder，
  * 随后 UI 即可拿到 [XposedService] 写入 RemotePreferences，跨进程同步到各 hook 进程。
  *
- * 模块未激活时 service 永远为 null，UI 侧回退本地 SharedPreferences，不影响界面可用性。
+ * UI 侧通过 [XposedService] 写入 RemotePreferences。
  */
 class FuckAndesApp : Application(), XposedServiceHelper.OnServiceListener {
 
@@ -44,11 +46,12 @@ class FuckAndesApp : Application(), XposedServiceHelper.OnServiceListener {
             private set
 
         private val listeners = CopyOnWriteArraySet<ServiceStateListener>()
+        private val mainHandler = Handler(Looper.getMainLooper())
 
         fun addServiceStateListener(listener: ServiceStateListener, notifyImmediately: Boolean) {
             listeners.add(listener)
             if (notifyImmediately) {
-                listener.onServiceStateChanged(serviceInstance)
+                dispatchTo(listener, serviceInstance)
             }
         }
 
@@ -57,7 +60,19 @@ class FuckAndesApp : Application(), XposedServiceHelper.OnServiceListener {
         }
 
         private fun dispatch(service: XposedService?) {
-            listeners.forEach { it.onServiceStateChanged(service) }
+            listeners.forEach { dispatchTo(it, service) }
+        }
+
+        private fun dispatchTo(listener: ServiceStateListener, service: XposedService?) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                listener.onServiceStateChanged(service)
+            } else {
+                mainHandler.post {
+                    if (listeners.contains(listener)) {
+                        listener.onServiceStateChanged(service)
+                    }
+                }
+            }
         }
     }
 }

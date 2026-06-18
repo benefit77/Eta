@@ -24,12 +24,12 @@
 
 锁屏唤起 Gemini 浮窗后，Google 偶发只显示输入框、不启动录音。模块优先直接 Hook `FloatyActivity.onResume()`，找不到目标类时才回退到全局 `Activity.onResume()`；确认仍处于锁屏后，带冷却地补发一次 `ACTION_VOICE_COMMAND`，避免用户还要手动点麦克风。
 
-## 配置与即时生效
+## 配置与实时生效
 
-模块自带配置界面（Miuix 0.9.2），基于 libxposed API 102 的 RemotePreferences 实现跨进程配置同步：
+模块 UI 基于 Miuix 0.9.2。配置链路如下：
 
-- **UI 进程**：`FuckAndesApp` 在 `Application.onCreate` 注册 `XposedServiceHelper`，框架通过 `XposedProvider` 推送 binder 后拿到 `XposedService`。设置页通过 `XposedService.getRemotePreferences()` 获取可写的 `SharedPreferences`，写入用 `commit()` 同步等待 binder 提交到 LSPosed 数据库；提交失败时 UI 不乐观切换开关状态，避免显示与 Hook 侧不一致。`XposedService` 未就绪时回退本地 `SharedPreferences`，UI 仍可操作但不会同步到 Hook。
-- **Hook 进程**：`ModuleMain.onModuleLoaded` 调用 `XposedInterface.getRemotePreferences()` 缓存只读 `SharedPreferences` 到 `Prefs`。各 Hook 拦截回调入口直接读 `Prefs.isEnabled(key)`，关闭则走原逻辑——即时生效，无需重启进程。
+- **UI 进程**：`FuckAndesApp` 在 `Application.onCreate` 注册 `XposedServiceHelper`，框架通过 `XposedProvider` 推送 binder 后拿到 `XposedService`。设置页通过 `XposedService.getRemotePreferences()` 获取可写的 `SharedPreferences`，写入用 `commit()` 同步等待 binder 提交到 LSPosed 数据库；提交失败时保持原开关状态。
+- **Hook 进程**：`ModuleMain.onModuleLoaded` 调用 `XposedInterface.getRemotePreferences()` 缓存只读 `SharedPreferences` 到 `Prefs`。各 Hook 拦截回调入口直接读 `Prefs.isEnabled(key)`，关闭则走原逻辑；因此正常使用时，配置切换后的下一次相关触发表现为实时生效。这里的实时生效来自 Hook 入口读取当前配置，不是 libxposed API 102 的 hot reload 特性。
 - **延迟任务复查**：已排队的延迟任务（`PowerHooks` recovery 重试、`HotwordSelfHealHooks` retry、`GoogleAppHooks` 锁屏语音命令）在执行前再次检查对应开关，避免用户在任务排队期间关闭开关后被已排队任务绕过。
 
 不可关闭的底层依赖（ContextualSearch 服务补齐、机型伪装、资格补齐）始终执行，不暴露开关。
@@ -52,4 +52,4 @@
 
 如果模块刚把"默认数字助理应用"切回 Google，系统还在异步重建相关服务，模块会尽量拦截掉这期间失败的调用流程（避免它傻傻地回退去打开 Google App 主界面），并在后台短时间内发起最多 3 次的延迟重试（从 1.2 秒起步）。实测即便在这种刚恢复配置的情况下，第一次长按通常也能顺利拉起 Gemini 浮窗。
 
-配置界面切换开关后，Hook 进程下次拦截回调即读到新值，即时生效。
+配置界面切换开关后会同步提交到 LSPosed 侧 RemotePreferences；Hook 回调和延迟任务执行前都会读取对应开关，所以后续触发按当前配置执行。

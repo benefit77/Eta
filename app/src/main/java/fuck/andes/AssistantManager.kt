@@ -59,7 +59,7 @@ internal object AssistantManager {
             val result = chain.proceed()
             captureVoiceInteractionManagerStub(chain.getThisObject())
             if (phase == BOOT_COMPLETED_PHASE) {
-                // 即时生效：开关关闭则不自动校正默认助理。
+                // 开关关闭则不自动校正默认助理。
                 if (!Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)) {
                     logger.debug("AssistantManager: 自动校正已关闭，跳过 boot 校正")
                 } else {
@@ -599,7 +599,7 @@ internal object AssistantManager {
         ) { chain ->
             val result = chain.proceed()
             captureVoiceInteractionManagerStub(chain.getThisObject())
-            // 即时生效：开关关闭则不自动校正默认助理。
+            // 开关关闭则不自动校正默认助理。
             if (!Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)) {
                 return@hookMethod result
             }
