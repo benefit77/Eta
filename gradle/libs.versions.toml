@@ -13,6 +13,7 @@ libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "li
 libxposed-service = { group = "io.github.libxposed", name = "service", version.ref = "libxposedService" }
 miuix-ui = { group = "top.yukonga.miuix.kmp", name = "miuix-ui", version.ref = "miuix" }
 miuix-preference = { group = "top.yukonga.miuix.kmp", name = "miuix-preference", version.ref = "miuix" }
+miuix-icons = { group = "top.yukonga.miuix.kmp", name = "miuix-icons", version.ref = "miuix" }
 activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 navigationevent-compose = { group = "androidx.navigationevent", name = "navigationevent-compose", version.ref = "navigationEvent" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

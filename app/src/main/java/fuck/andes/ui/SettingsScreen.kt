@@ -5,8 +5,11 @@ import android.content.SharedPreferences
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -16,6 +19,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import fuck.andes.FuckAndesApp
@@ -28,14 +33,35 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TopAppBar
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.ConvertFile
+import top.yukonga.miuix.kmp.icon.extended.Link
+import top.yukonga.miuix.kmp.icon.extended.Lock
+import top.yukonga.miuix.kmp.icon.extended.Mic
+import top.yukonga.miuix.kmp.icon.extended.Scan
+import top.yukonga.miuix.kmp.icon.extended.Search
+import top.yukonga.miuix.kmp.icon.extended.Tune
+import top.yukonga.miuix.kmp.icon.extended.Update
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+// ── 图标 tint 色 ─────────────────────────────────────────────────────────────
+// 交互接管组 — 蓝色系
+private val IconTintBlue = Color(0xFF3482F6)
+// 助理配置组 — 绿色系
+private val IconTintGreen = Color(0xFF34C759)
+// 高级组 — 紫色系
+private val IconTintPurple = Color(0xFFAF52DE)
 
 /**
  * 模块配置界面。
@@ -77,71 +103,125 @@ internal fun SettingsScreen(context: Context) {
             modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = innerPadding,
         ) {
-            item(key = "section_features") {
-                SmallTitle("功能")
-                Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-                    if (prefs == null) {
+            // ── LSPosed 未连接提示 ──────────────────────────────────────
+            if (prefs == null) {
+                item(key = "service_warning") {
+                    Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                         BasicComponent(
                             title = "LSPosed 服务未连接",
-                            summary = "当前只能查看默认开关状态，模块激活并连接服务后才可修改配置。",
                         )
                     }
+                }
+            }
+
+            // ── 交互接管 ────────────────────────────────────────────────
+            item(key = "section_interaction") {
+                SmallTitle("交互接管")
+                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     SwitchPref(
                         context = context,
                         prefs = prefs,
-                        title = "电源键长按接管 Gemini",
-                        summary = "电源键长按不再走小布，直接唤起 Gemini",
+                        title = "长按电源键唤起 Gemini",
                         key = Prefs.Keys.POWER_KEY_TAKEOVER,
+                        icon = MiuixIcons.Tune,
+                        iconTint = IconTintBlue,
                     )
+                    PrefDivider()
                     SwitchPref(
                         context = context,
                         prefs = prefs,
-                        title = "手势条长按 → 一圈即搜",
-                        summary = "拦截底部手势条长按的 OPPO OCR 识屏，改触发一圈即搜",
+                        title = "手势条长按触发一圈即搜",
                         key = Prefs.Keys.GESTURE_BAR_CIRCLE_TO_SEARCH,
+                        icon = MiuixIcons.Search,
+                        iconTint = IconTintBlue,
                     )
+                    PrefDivider()
                     SwitchPref(
                         context = context,
                         prefs = prefs,
-                        title = "双指识屏 → 一圈即搜",
-                        summary = "拦截双指识屏，改触发一圈即搜",
+                        title = "双指长按触发一圈即搜",
                         key = Prefs.Keys.DOUBLE_FINGER_CIRCLE_TO_SEARCH,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = prefs,
-                        title = "开机自动校正默认助理",
-                        summary = "开机 / 解锁 / 切用户时自动把默认助理设为 Google",
-                        key = Prefs.Keys.ASSISTANT_AUTO_CONFIG,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = prefs,
-                        title = "息屏后维持 Hey Google",
-                        summary = "息屏后恢复 Google 软件热词检测，避免唤不醒",
-                        key = Prefs.Keys.HOTWORD_SELF_HEAL,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = prefs,
-                        title = "锁屏唤起补语音输入",
-                        summary = "锁屏唤起 Gemini 浮窗后自动补发语音输入",
-                        key = Prefs.Keys.LOCKSCREEN_VOICE_COMMAND,
+                        icon = MiuixIcons.Scan,
+                        iconTint = IconTintBlue,
                     )
                 }
             }
+
+            // ── 助理配置 ────────────────────────────────────────────────
+            item(key = "section_assistant") {
+                SmallTitle("助理配置")
+                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    SwitchPref(
+                        context = context,
+                        prefs = prefs,
+                        title = "自动设置 Google 为默认助理",
+                        key = Prefs.Keys.ASSISTANT_AUTO_CONFIG,
+                        icon = MiuixIcons.Update,
+                        iconTint = IconTintGreen,
+                    )
+                    PrefDivider()
+                    SwitchPref(
+                        context = context,
+                        prefs = prefs,
+                        title = "息屏后维持 Hey Google 检测",
+                        key = Prefs.Keys.HOTWORD_SELF_HEAL,
+                        icon = MiuixIcons.Mic,
+                        iconTint = IconTintGreen,
+                    )
+                    PrefDivider()
+                    SwitchPref(
+                        context = context,
+                        prefs = prefs,
+                        title = "锁屏唤起自动语音输入",
+                        key = Prefs.Keys.LOCKSCREEN_VOICE_COMMAND,
+                        icon = MiuixIcons.Lock,
+                        iconTint = IconTintGreen,
+                    )
+                }
+            }
+
+            // ── 高级 ────────────────────────────────────────────────────
             item(key = "section_systemizer") {
-                SmallTitle("系统化")
-                Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+                SmallTitle("高级")
+                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
-                        title = "转为系统应用",
-                        summary = "将 Google App 安装为系统 priv-app，获得语音唤醒依赖，减少自启等烦恼，方便使用",
+                        title = "将 Google App 转为系统应用",
+                        startAction = {
+                            TintedIcon(
+                                icon = MiuixIcons.ConvertFile,
+                                tint = IconTintPurple,
+                            )
+                        },
                         enabled = !installingSystemizer,
                         holdDownState = showSystemizerDialog,
                         onClick = {
                             if (!installingSystemizer) {
                                 showSystemizerDialog = true
                             }
+                        },
+                    )
+                    PrefDivider()
+                    ArrowPreference(
+                        title = "源代码",
+                        startAction = {
+                            TintedIcon(
+                                icon = MiuixIcons.Link,
+                                tint = IconTintPurple,
+                            )
+                        },
+                        endActions = {
+                            Text(
+                                text = "GitHub",
+                                fontSize = MiuixTheme.textStyles.body2.fontSize,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                            )
+                        },
+                        onClick = {
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://github.com/wowohut/fuck-andes"),
+                            )
+                            context.startActivity(intent)
                         },
                     )
                 }
@@ -176,6 +256,36 @@ internal fun SettingsScreen(context: Context) {
     }
 }
 
+// ── 带色彩的图标（Miuix 风格：纯图标 + tint） ────────────────────────────────
+
+@Composable
+private fun TintedIcon(
+    icon: ImageVector,
+    tint: Color,
+) {
+    Icon(
+        imageVector = icon,
+        contentDescription = null,
+        modifier = Modifier.padding(end = 16.dp).size(24.dp),
+        tint = tint,
+    )
+}
+
+// ── Card 内分隔线 ───────────────────────────────────────────────────────────
+
+@Composable
+private fun PrefDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(
+            // 对齐 BasicComponent 内文字起始位置：
+            // insideMargin(16) + 图标 padding end(16) + 图标宽度(24) + startAction 与 center 间距(8) = 64dp
+            start = 64.dp,
+        ),
+    )
+}
+
+// ── 系统化确认对话框 ─────────────────────────────────────────────────────────
+
 @Composable
 private fun SystemizerConfirmDialog(
     show: Boolean,
@@ -185,10 +295,22 @@ private fun SystemizerConfirmDialog(
 ) {
     OverlayDialog(
         show = show,
-        title = "转为系统应用",
-        summary = "将通过 root 安装 Google App 系统化模块，重启后生效。",
+        title = "将 Google App 转为系统应用",
         onDismissRequest = onDismissRequest,
     ) {
+        Text(
+            text = "系统应用享有语音唤醒权限、更少的自启限制，体验接近原生。",
+            modifier = Modifier.fillMaxWidth(),
+            fontSize = MiuixTheme.textStyles.body2.fontSize,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = "通过 Magisk / KernelSU 模块安装，重启后生效。",
+            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+            fontSize = MiuixTheme.textStyles.footnote1.fontSize,
+            color = MiuixTheme.colorScheme.onSurfaceVariantActions,
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -210,6 +332,8 @@ private fun SystemizerConfirmDialog(
     }
 }
 
+// ── 带图标的布尔开关 ─────────────────────────────────────────────────────────
+
 /**
  * 单个布尔开关：状态随 [prefs]/[key] 变化重读，切换时同步写入。
  *
@@ -222,14 +346,14 @@ private fun SwitchPref(
     context: Context,
     prefs: SharedPreferences?,
     title: String,
-    summary: String,
     key: String,
+    icon: ImageVector,
+    iconTint: Color,
 ) {
     val enabled = prefs != null
     var checked by remember(prefs, key) { mutableStateOf(prefs?.getBoolean(key, true) ?: true) }
     SwitchPreference(
         title = title,
-        summary = summary,
         checked = checked,
         onCheckedChange = { value ->
             // 同步提交；RemotePreferences.commit() 失败（binder 提交失败）时回滚 UI 状态，
@@ -240,6 +364,9 @@ private fun SwitchPref(
             } else {
                 Toast.makeText(context.applicationContext, "配置写入失败", Toast.LENGTH_SHORT).show()
             }
+        },
+        startAction = {
+            TintedIcon(icon = icon, tint = iconTint)
         },
         enabled = enabled,
     )

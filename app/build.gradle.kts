@@ -69,6 +69,7 @@ dependencies {
     implementation(libs.libxposed.service)
     implementation(libs.miuix.ui)
     implementation(libs.miuix.preference)
+    implementation(libs.miuix.icons)
     implementation(libs.activity.compose)
     implementation(libs.navigationevent.compose)
 
