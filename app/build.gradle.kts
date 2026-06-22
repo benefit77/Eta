@@ -71,7 +71,6 @@ dependencies {
     implementation(libs.miuix.preference)
     implementation(libs.miuix.icons)
     implementation(libs.activity.compose)
-    implementation(libs.navigationevent.compose)
 
     testImplementation(libs.junit)
 }
