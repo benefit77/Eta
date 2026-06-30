@@ -1,6 +1,8 @@
 package fuck.andes.agent.runtime
 
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 internal class AgentRunController {
     private val resources = CopyOnWriteArraySet<CancellableResource>()
@@ -8,14 +10,54 @@ internal class AgentRunController {
     @Volatile
     private var cancelled = false
 
+    private val lock = ReentrantLock()
+    private val pauseCondition = lock.newCondition()
+    @Volatile
+    private var paused = false
+
     fun cancel() {
-        cancelled = true
+        lock.withLock {
+            cancelled = true
+            paused = false
+            pauseCondition.signalAll()
+        }
         resources.forEach { resource ->
             runCatching { resource.cancel() }
         }
     }
 
+    /**
+     * 暂停执行：后续 [throwIfCancelled] 调用会阻塞挂起，直到 [resume] 或 [cancel]。
+     * 在工作线程的检查点调用，不会阻塞调用方线程。
+     */
+    fun pause() {
+        lock.withLock { paused = true }
+    }
+
+    /**
+     * 恢复执行：唤醒被 [throwIfCancelled] 阻塞的工作线程，从挂起点继续。
+     */
+    fun resume() {
+        lock.withLock {
+            paused = false
+            pauseCondition.signalAll()
+        }
+    }
+
+    /**
+     * 检查点：若已取消则抛异常；若已暂停则阻塞挂起直到恢复或取消。
+     * 在 agent 循环的每轮/每步调用，实现暂停可恢复、取消即终止。
+     */
     fun throwIfCancelled() {
+        lock.withLock {
+            while (paused && !cancelled) {
+                try {
+                    pauseCondition.await()
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+        }
         if (cancelled) throw AgentRunCancelledException()
     }
 

@@ -4,7 +4,7 @@ import androidx.compose.runtime.Immutable
 import fuck.andes.agent.runtime.AgentEvent
 
 /** Agent 浮窗所处的阶段。 */
-internal enum class AgentOverlayPhase { RUNNING, FINISHED, FAILED }
+internal enum class AgentOverlayPhase { RUNNING, PAUSED, FINISHED, FAILED }
 
 /**
  * Agent 浮窗的渲染状态。由 [AgentEvent] 流累积而来，[AgentOverlayContent] 直接消费。
@@ -148,3 +148,14 @@ private fun AgentOverlayState.appendStreamingText(event: AgentEvent.AssistantTex
         detailText = nextPreview,
     )
 }
+
+/**
+ * 面向用户的副状态文案，由阶段派生，供底部任务卡片展示。
+ */
+internal val AgentOverlayState.subStatusText: String
+    get() = when (phase) {
+        AgentOverlayPhase.RUNNING -> "智能执行中"
+        AgentOverlayPhase.PAUSED -> "已暂停，可点击继续"
+        AgentOverlayPhase.FINISHED -> "已完成"
+        AgentOverlayPhase.FAILED -> "执行失败"
+    }
