@@ -1,5 +1,6 @@
 package fuck.andes.agent.model
 
+import fuck.andes.agent.skill.SkillContext
 import fuck.andes.config.Prefs
 import fuck.andes.agent.runtime.AgentEvent
 import fuck.andes.agent.runtime.AgentRunController
@@ -28,10 +29,11 @@ internal object AgentModelClient {
         history: List<ConversationMessage> = emptyList(),
         provider: AgentProviderClient = OpenAiChatCompletionsProvider,
         runController: AgentRunController = AgentRunController(),
+        skillContext: SkillContext = SkillContext.EMPTY,
         onEvent: (AgentEvent) -> Unit = {}
     ): ModelResponse.Text {
         config.validate()
-        val messages = buildInitialMessages(config, prompt, images, history)
+        val messages = buildInitialMessages(config, prompt, images, history, skillContext)
         val tools = buildToolsJson(config.terminalTools)
         onEvent(
             AgentEvent.RunStarted(
@@ -141,7 +143,8 @@ internal object AgentModelClient {
         config: ModelConfig,
         prompt: String,
         images: List<ModelImage>,
-        history: List<ConversationMessage>
+        history: List<ConversationMessage>,
+        skillContext: SkillContext = SkillContext.EMPTY
     ): JSONArray {
         val messages = JSONArray()
         if (config.systemPrompt.isNotBlank()) {
@@ -169,6 +172,7 @@ internal object AgentModelClient {
                     )
                 )
         }
+        buildSkillSystemMessage(skillContext)?.let { messages.put(it) }
         history.forEach { item ->
             val role = item.role.trim()
             val content = item.content.trim()
@@ -210,6 +214,34 @@ internal object AgentModelClient {
         return JSONObject()
             .put("role", "user")
             .put("content", content)
+    }
+
+    private fun buildSkillSystemMessage(skillContext: SkillContext): JSONObject? {
+        val installed = skillContext.installedSkills
+        if (installed.isEmpty()) return null
+        val sb = StringBuilder()
+        sb.appendLine("已启用 Skills 索引（仅元信息，正文按需加载）：")
+        installed.forEach { skill ->
+            val capabilities = buildList {
+                if (skill.hasScripts) add("scripts")
+                if (skill.hasReferences) add("references")
+                if (skill.hasAssets) add("assets")
+                if (skill.hasEvals) add("evals")
+            }.joinToString(", ").ifBlank { "metadata-only" }
+            val description = skill.description
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .let { if (it.length <= 180) it else it.take(180) + "..." }
+                .ifBlank { "无描述" }
+            sb.appendLine(
+                "- id=${skill.id} | name=${skill.name} | path=${skill.skillFilePath} | capabilities=$capabilities | description=$description"
+            )
+        }
+        sb.appendLine()
+        sb.appendLine("只把上面的索引当作目录；需要某个 skill 的具体步骤、脚本或引用时，先调用 skills_read 读取对应 SKILL.md，不要凭索引臆测正文细节。")
+        return JSONObject()
+            .put("role", "system")
+            .put("content", sb.toString().trim())
     }
 
     private fun buildToolsJson(terminalTools: Boolean): JSONArray =
@@ -698,8 +730,62 @@ internal object AgentModelClient {
                 )
             )
             .also { tools ->
+                appendSkillsTools(tools)
                 if (terminalTools) appendTerminalTools(tools)
             }
+
+    private fun appendSkillsTools(tools: JSONArray) {
+        tools
+            .put(
+                functionTool(
+                    name = "skills_list",
+                    description = "List installed skills with their id, name, description, and capabilities. Use when the user asks what skills are available or whether a certain type of skill is installed.",
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put(
+                                    "query",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "Optional keyword to filter by skill id, name, or description.")
+                                )
+                                .put(
+                                    "limit",
+                                    JSONObject()
+                                        .put("type", "integer")
+                                        .put("description", "Max results to return, 1-200, default 50.")
+                                )
+                        )
+                )
+            )
+            .put(
+                functionTool(
+                    name = "skills_read",
+                    description = "Read the full SKILL.md body of an installed skill by id, name, or path. Use when you know a skill might be relevant but its full body was not injected this turn.",
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put(
+                                    "skillId",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "The skill's id, name, or SKILL.md path. Use skills_list first if unsure.")
+                                )
+                                .put(
+                                    "maxChars",
+                                    JSONObject()
+                                        .put("type", "integer")
+                                        .put("description", "Max characters of body to return, 512-64000, default 16000.")
+                                )
+                        )
+                        .put("required", JSONArray().put("skillId"))
+                )
+            )
+    }
 
     private fun appendTerminalTools(tools: JSONArray) {
         tools

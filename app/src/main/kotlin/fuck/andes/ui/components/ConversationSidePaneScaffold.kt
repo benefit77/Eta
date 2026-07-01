@@ -91,6 +91,7 @@ fun ConversationSidePaneScaffold(
     onConversationSelected: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenTools: () -> Unit,
+    onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
@@ -129,6 +130,7 @@ fun ConversationSidePaneScaffold(
             onConversationSelected = onConversationSelected,
             onOpenSettings = onOpenSettings,
             onOpenTools = onOpenTools,
+            onOpenSkills = onOpenSkills,
             onOpenPermissions = onOpenPermissions,
             modifier = Modifier.zIndex(0f),
         )
@@ -196,6 +198,7 @@ private fun ConversationPanePanel(
     onConversationSelected: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenTools: () -> Unit,
+    onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -260,6 +263,7 @@ private fun ConversationPanePanel(
             PaneDock(
                 onOpenSettings = onOpenSettings,
                 onOpenTools = onOpenTools,
+                onOpenSkills = onOpenSkills,
                 onOpenPermissions = onOpenPermissions,
             )
             Spacer(modifier = Modifier.height(DrawerMetrics.BottomInset))
@@ -398,6 +402,7 @@ private fun EmptyConversations(isSearching: Boolean) {
 private fun PaneDock(
     onOpenSettings: () -> Unit,
     onOpenTools: () -> Unit,
+    onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
 ) {
     Row(
@@ -414,6 +419,11 @@ private fun PaneDock(
             icon = LucideR.drawable.lucide_ic_package,
             label = "工具",
             onClick = onOpenTools,
+        )
+        DockButton(
+            icon = LucideR.drawable.lucide_ic_sparkles,
+            label = "技能",
+            onClick = onOpenSkills,
         )
         DockButton(
             icon = LucideR.drawable.lucide_ic_lock,

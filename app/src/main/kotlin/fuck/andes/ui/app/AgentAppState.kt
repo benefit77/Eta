@@ -16,11 +16,13 @@ import fuck.andes.agent.runtime.AgentEvent
 import fuck.andes.agent.runtime.AgentRuntimeClient
 import fuck.andes.agent.runtime.AgentRuntimeWire
 import fuck.andes.agent.runtime.AgentTokenUsage
+import fuck.andes.agent.skill.SkillRuntime
 import fuck.andes.config.Prefs
 import fuck.andes.core.AndroidAgentLogger
 import fuck.andes.ui.model.AgentChatHomeUiState
 import fuck.andes.ui.model.AgentChatMessageUi
 import fuck.andes.ui.model.AgentMessageUi
+import fuck.andes.ui.model.AgentSkillsUiState
 import fuck.andes.ui.model.AgentSystemEnhanceUiState
 import fuck.andes.ui.model.AgentToolsUiState
 import fuck.andes.ui.model.ConversationModeUi
@@ -30,6 +32,7 @@ import fuck.andes.ui.model.PermissionHealthItemUi
 import fuck.andes.ui.model.PermissionHealthUiState
 import fuck.andes.ui.model.PermissionStatusUi
 import fuck.andes.ui.model.PendingImageUi
+import fuck.andes.ui.model.SkillItemUi
 import fuck.andes.ui.model.SystemEnhanceItemUi
 import fuck.andes.ui.model.SystemEnhanceSectionUi
 import fuck.andes.ui.model.SystemEnhanceStatusUi
@@ -91,6 +94,9 @@ internal class AgentAppState(
         private set
 
     var toolsState by mutableStateOf(buildToolsState())
+        private set
+
+    var skillsState by mutableStateOf(AgentSkillsUiState(isLoading = true))
         private set
 
     var permissionHealthState by mutableStateOf(buildPermissionHealthState(appContext))
@@ -316,6 +322,58 @@ internal class AgentAppState(
 
     fun refreshPermissionHealth() {
         permissionHealthState = buildPermissionHealthState(appContext)
+    }
+
+    fun refreshSkills() {
+        scope.launch(Dispatchers.IO) {
+            val indexService = SkillRuntime.createIndexService(appContext)
+            indexService.seedBuiltinSkillsIfNeeded()
+            val entries = indexService.listSkillsForManagement()
+            val items = entries.map { entry ->
+                val capabilities = buildList {
+                    if (entry.hasScripts) add("scripts")
+                    if (entry.hasReferences) add("references")
+                    if (entry.hasAssets) add("assets")
+                    if (entry.hasEvals) add("evals")
+                }
+                SkillItemUi(
+                    id = entry.id,
+                    name = entry.name,
+                    description = entry.description,
+                    source = entry.source,
+                    enabled = entry.enabled,
+                    installed = entry.installed,
+                    capabilities = capabilities,
+                )
+            }
+            withContext(Dispatchers.Main) {
+                skillsState = AgentSkillsUiState(skills = items, isLoading = false)
+            }
+        }
+    }
+
+    fun toggleSkill(skillId: String, enabled: Boolean) {
+        scope.launch(Dispatchers.IO) {
+            val indexService = SkillRuntime.createIndexService(appContext)
+            indexService.setSkillEnabled(skillId, enabled)
+            refreshSkills()
+        }
+    }
+
+    fun deleteSkill(skillId: String) {
+        scope.launch(Dispatchers.IO) {
+            val indexService = SkillRuntime.createIndexService(appContext)
+            indexService.deleteSkill(skillId)
+            refreshSkills()
+        }
+    }
+
+    fun reinstallBuiltin(skillId: String) {
+        scope.launch(Dispatchers.IO) {
+            val indexService = SkillRuntime.createIndexService(appContext)
+            indexService.installBuiltinSkill(skillId)
+            refreshSkills()
+        }
     }
 
     private fun applyRunEvent(runId: String, event: AgentEvent) {

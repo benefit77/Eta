@@ -20,6 +20,7 @@ import androidx.navigation3.ui.NavDisplay
 import fuck.andes.ui.SettingsScreen
 import fuck.andes.ui.model.AgentChatAction
 import fuck.andes.ui.model.AgentHomeAction
+import fuck.andes.ui.model.AgentSkillsAction
 import fuck.andes.ui.model.AgentSystemEnhanceAction
 import fuck.andes.ui.model.AgentToolsAction
 import fuck.andes.ui.model.PermissionHealthAction
@@ -29,6 +30,7 @@ import fuck.andes.ui.screens.chat.AgentChatScreen
 import fuck.andes.ui.screens.enhance.SystemEnhanceScreen
 import fuck.andes.ui.screens.home.AgentHomeScreen
 import fuck.andes.ui.screens.permissions.PermissionHealthScreen
+import fuck.andes.ui.screens.skills.AgentSkillsScreen
 import fuck.andes.ui.screens.tools.AgentToolsScreen
 
 /**
@@ -89,6 +91,7 @@ fun AgentAppRoot() {
             onNewConversation = { createConversation() },
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
             onOpenTools = { pushRoute(AppRoute.Tools) },
+            onOpenSkills = { pushRoute(AppRoute.Skills) },
             onOpenPermissions = { pushRoute(AppRoute.Permissions) },
             onOpenSettings = { pushRoute(AppRoute.Settings) },
         ) { padding ->
@@ -113,6 +116,7 @@ fun AgentAppRoot() {
                                 is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
                                 is AgentHomeAction.RemoveImage -> agentState.removePendingImage(action.id)
                                 AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
+                                AgentHomeAction.OpenSkills -> pushRoute(AppRoute.Skills)
                                 AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
                                 AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
                                 AgentHomeAction.OpenSettings -> pushRoute(AppRoute.Settings)
@@ -148,6 +152,24 @@ fun AgentAppRoot() {
                         onAction = { action ->
                             when (action) {
                                 AgentToolsAction.NavigateBack -> popRoute()
+                            }
+                        },
+                    )
+                }
+            }
+            entry<AppRoute.Skills> {
+                RoutedShell(route = AppRoute.Skills) {
+                    LaunchedEffect(Unit) {
+                        agentState.refreshSkills()
+                    }
+                    AgentSkillsScreen(
+                        state = agentState.skillsState,
+                        onAction = { action ->
+                            when (action) {
+                                AgentSkillsAction.NavigateBack -> popRoute()
+                                is AgentSkillsAction.ToggleSkill -> agentState.toggleSkill(action.skillId, action.enabled)
+                                is AgentSkillsAction.DeleteSkill -> agentState.deleteSkill(action.skillId)
+                                is AgentSkillsAction.ReinstallBuiltin -> agentState.reinstallBuiltin(action.skillId)
                             }
                         },
                     )

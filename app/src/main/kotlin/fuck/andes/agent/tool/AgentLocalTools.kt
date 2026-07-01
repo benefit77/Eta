@@ -3,6 +3,9 @@ package fuck.andes.agent.tool
 import fuck.andes.agent.device.RootShellDeviceController
 import fuck.andes.agent.model.AgentModelClient
 import fuck.andes.agent.runtime.AgentAppContext
+import fuck.andes.agent.skill.SkillCompatibilityChecker
+import fuck.andes.agent.skill.SkillIndexService
+import fuck.andes.agent.skill.SkillLoader
 import fuck.andes.agent.terminal.RootShellTerminalController
 import fuck.andes.core.HookSupport
 
@@ -19,7 +22,9 @@ import org.json.JSONObject
 
 internal class AgentLocalTools(
     private val logger: AgentLogger,
-    private val terminalToolsEnabled: Boolean = Prefs.isEnabled(Prefs.Keys.AGENT_TERMINAL_TOOLS)
+    private val terminalToolsEnabled: Boolean = Prefs.isEnabled(Prefs.Keys.AGENT_TERMINAL_TOOLS),
+    private val skillIndexService: SkillIndexService? = null,
+    private val skillLoader: SkillLoader? = null,
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
     private val deviceController = RootShellDeviceController(logger)
@@ -63,6 +68,8 @@ internal class AgentLocalTools(
                 "read_file" -> textResult(terminalTool { readFile(args) })
                 "write_file" -> textResult(terminalTool { writeFile(args) })
                 "list_directory" -> textResult(terminalTool { listDirectory(args) })
+                "skills_list" -> textResult(skillsList(args))
+                "skills_read" -> textResult(skillsRead(args))
                 else -> textResult(
                     errorResult(
                         code = "UNKNOWN_TOOL",
@@ -439,6 +446,86 @@ internal class AgentLocalTools(
 
     private fun JSONObject.optNullableInt(name: String): Int? =
         if (has(name) && !isNull(name)) optInt(name) else null
+
+    // ==================== Skills tools ====================
+
+    private fun skillsList(args: JSONObject): String {
+        val indexService = skillIndexService
+            ?: return errorResult("SKILLS_UNAVAILABLE", "技能服务未初始化")
+        val query = args.optString("query").trim().lowercase()
+        val limit = args.optInt("limit", 50).coerceIn(1, 200)
+        val entries = indexService.listInstalledSkills()
+            .filter { entry -> SkillCompatibilityChecker.evaluate(entry).available }
+            .filter { entry ->
+                if (query.isBlank()) true
+                else listOf(entry.id, entry.name, entry.description, entry.skillFilePath, entry.rootPath)
+                    .any { it.lowercase().contains(query) }
+            }
+            .take(limit)
+        val items = JSONArray()
+        entries.forEach { entry ->
+            val capabilities = JSONArray()
+            if (entry.hasScripts) capabilities.put("scripts")
+            if (entry.hasReferences) capabilities.put("references")
+            if (entry.hasAssets) capabilities.put("assets")
+            if (entry.hasEvals) capabilities.put("evals")
+            items.put(
+                JSONObject()
+                    .put("id", entry.id)
+                    .put("name", entry.name)
+                    .put("description", entry.description)
+                    .put("enabled", entry.enabled)
+                    .put("source", entry.source)
+                    .put("rootPath", entry.rootPath)
+                    .put("skillFilePath", entry.skillFilePath)
+                    .put("capabilities", capabilities)
+            )
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("query", query)
+            .put("count", entries.size)
+            .put("items", items)
+            .toString()
+    }
+
+    private fun skillsRead(args: JSONObject): String {
+        val indexService = skillIndexService
+            ?: return errorResult("SKILLS_UNAVAILABLE", "技能服务未初始化")
+        val loader = skillLoader
+            ?: return errorResult("SKILLS_UNAVAILABLE", "技能加载器未初始化")
+        val skillId = args.optString("skillId").trim()
+        if (skillId.isBlank()) return errorResult("MISSING_PARAM", "缺少 skillId")
+        val maxChars = args.optInt("maxChars", 16_000).coerceIn(512, 64_000)
+        val entry = indexService.findInstalledSkill(skillId)
+            ?: return errorResult("NOT_FOUND", "未找到 skill：$skillId")
+        val compat = SkillCompatibilityChecker.evaluate(entry)
+        if (!compat.available) return errorResult("INCOMPATIBLE", compat.reason ?: "当前环境不可用")
+        val resolved = loader.load(entry, "agent 主动读取 skill")
+            ?: return errorResult("READ_FAILED", "读取 SKILL.md 失败：${entry.skillFilePath}")
+        val body = if (resolved.bodyMarkdown.length <= maxChars) {
+            resolved.bodyMarkdown
+        } else {
+            resolved.bodyMarkdown.take(maxChars) + "\n..."
+        }
+        val references = JSONArray()
+        resolved.loadedReferences.forEach { references.put(it) }
+        val frontmatter = JSONObject()
+        resolved.frontmatter.forEach { (k, v) -> frontmatter.put(k, v) }
+        return JSONObject()
+            .put("ok", true)
+            .put("id", entry.id)
+            .put("name", entry.name)
+            .put("description", entry.description)
+            .put("rootPath", entry.rootPath)
+            .put("skillFilePath", entry.skillFilePath)
+            .put("scriptsDir", resolved.scriptsDir ?: JSONObject.NULL)
+            .put("assetsDir", resolved.assetsDir ?: JSONObject.NULL)
+            .put("references", references)
+            .put("frontmatter", frontmatter)
+            .put("bodyMarkdown", body)
+            .toString()
+    }
 
     private fun errorResult(code: String, message: String): String =
         JSONObject()

@@ -43,6 +43,7 @@ fun AgentAppShell(
     onNewConversation: () -> Unit,
     onSelectConversation: (String) -> Unit,
     onOpenTools: () -> Unit,
+    onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -80,6 +81,7 @@ fun AgentAppShell(
                 onConversationSelected = onSelectConversation,
                 onOpenSettings = onOpenSettings,
                 onOpenTools = onOpenTools,
+                onOpenSkills = onOpenSkills,
                 onOpenPermissions = onOpenPermissions,
             ) {
                 pageContent()
@@ -136,6 +138,7 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.Home -> ""
     is AppRoute.Chat -> "对话"
     is AppRoute.Tools -> "工具能力"
+    is AppRoute.Skills -> "技能"
     is AppRoute.Permissions -> "权限健康"
     is AppRoute.SystemEnhance -> "系统增强"
     is AppRoute.Settings -> "设置"

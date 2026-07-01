@@ -8,6 +8,7 @@ sealed interface AgentHomeAction {
     data class ImageAttached(val uri: String) : AgentHomeAction
     data class RemoveImage(val id: String) : AgentHomeAction
     data object OpenTools : AgentHomeAction
+    data object OpenSkills : AgentHomeAction
     data object OpenPermissions : AgentHomeAction
     data object OpenSystemEnhance : AgentHomeAction
     data object OpenSettings : AgentHomeAction
@@ -31,6 +32,13 @@ sealed interface AgentChatAction {
 
 sealed interface AgentToolsAction {
     data object NavigateBack : AgentToolsAction
+}
+
+sealed interface AgentSkillsAction {
+    data object NavigateBack : AgentSkillsAction
+    data class ToggleSkill(val skillId: String, val enabled: Boolean) : AgentSkillsAction
+    data class DeleteSkill(val skillId: String) : AgentSkillsAction
+    data class ReinstallBuiltin(val skillId: String) : AgentSkillsAction
 }
 
 sealed interface AgentSystemEnhanceAction {

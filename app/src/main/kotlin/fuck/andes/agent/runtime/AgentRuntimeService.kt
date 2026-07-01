@@ -31,6 +31,9 @@ import fuck.andes.agent.overlay.AgentOverlayOrb
 import fuck.andes.agent.overlay.AgentOverlayPhase
 import fuck.andes.agent.overlay.AgentOverlayState
 import fuck.andes.agent.overlay.applyEvent
+import fuck.andes.agent.skill.SkillCompatibilityChecker
+import fuck.andes.agent.skill.SkillContext
+import fuck.andes.agent.skill.SkillRuntime
 import fuck.andes.agent.tool.AgentLocalTools
 import fuck.andes.core.AndroidAgentLogger
 import fuck.andes.core.ModuleConfig
@@ -167,9 +170,20 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         ensureOverlayVisible()
 
         thread(name = "agent-runtime") {
+            val skillIndexService = SkillRuntime.createIndexService(this@AgentRuntimeService)
+            val skillLoader = SkillRuntime.createLoader(this@AgentRuntimeService)
+            skillIndexService.seedBuiltinSkillsIfNeeded()
+            val installedSkills = skillIndexService.listInstalledSkills()
+                .filter { SkillCompatibilityChecker.evaluate(it).available }
+            val skillContext = SkillContext(
+                installedSkills = installedSkills,
+            )
+
             val toolExecutor = AgentLocalTools(
                 logger = AndroidAgentLogger,
-                terminalToolsEnabled = request.config.terminalTools
+                terminalToolsEnabled = request.config.terminalTools,
+                skillIndexService = skillIndexService,
+                skillLoader = skillLoader,
             )
             val toolsBinding = runController.register { toolExecutor.close() }
             try {
@@ -180,7 +194,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         toolExecutor = toolExecutor,
                         images = request.images,
                         history = request.history,
-                        runController = runController
+                        runController = runController,
+                        skillContext = skillContext
                     ) { event ->
                         if (activeRunController == runController) {
                             AndroidAgentLogger.info("Agent runtime event: ${event.toLogLine()}")
