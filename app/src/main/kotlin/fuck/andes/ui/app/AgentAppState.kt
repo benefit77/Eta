@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import fuck.andes.FuckAndesApp
 import fuck.andes.agent.accessibility.AgentAccessibilityService
+import fuck.andes.agent.media.AgentImageCodec
 import fuck.andes.agent.model.AgentModelClient
 import fuck.andes.agent.runtime.AgentEvent
 import fuck.andes.agent.runtime.AgentRuntimeClient
@@ -28,6 +29,7 @@ import fuck.andes.ui.model.ConversationSummaryUi
 import fuck.andes.ui.model.PermissionHealthItemUi
 import fuck.andes.ui.model.PermissionHealthUiState
 import fuck.andes.ui.model.PermissionStatusUi
+import fuck.andes.ui.model.PendingImageUi
 import fuck.andes.ui.model.SystemEnhanceItemUi
 import fuck.andes.ui.model.SystemEnhanceSectionUi
 import fuck.andes.ui.model.SystemEnhanceStatusUi
@@ -56,6 +58,8 @@ internal class AgentAppState(
     private val runToolCounts = mutableMapOf<String, Int>()
     private val runConversationIds = mutableMapOf<String, String>()
     private val runThinkingStartedAt = mutableMapOf<String, Long>()
+    private var currentRunId: String? = null
+    private var currentRunJob: kotlinx.coroutines.Job? = null
     private val defaultThinkingEnabled = loadModelConfigForUi().thinkingEnabled
     private val initialConversations = AgentConversationStore.load(appContext, defaultThinkingEnabled)
 
@@ -207,8 +211,10 @@ internal class AgentAppState(
         val conversationId = selectedConversationId
         val history = buildConversationHistory(homeState.messages)
         val thinkingEnabled = homeState.thinkingEnabled
+        val pendingImages = homeState.pendingImages
         val runId = "run-${UUID.randomUUID()}"
-        val userMessage = UserMessageUi(id = "user-$runId", content = prompt)
+        val imageDataUrls = pendingImages.map { it.dataUrl }
+        val userMessage = UserMessageUi(id = "user-$runId", content = prompt, images = imageDataUrls)
         val assistantMessage = AgentMessageUi(
             id = "assistant-$runId",
             content = "",
@@ -223,26 +229,36 @@ internal class AgentAppState(
         conversationTitles = conversationTitles + (selectedConversationId to title)
         runToolCounts[runId] = 0
         runConversationIds[runId] = conversationId
+        currentRunId = runId
 
         updateConversation(
             conversationId,
             homeState.copy(
                 input = "",
                 isStreaming = true,
+                pendingImages = emptyList(),
                 messages = homeState.messages + userMessage + assistantMessage,
             )
         )
         refreshConversationSummaries()
         persistConversations()
 
-        scope.launch(Dispatchers.IO) {
+        currentRunJob = scope.launch(Dispatchers.IO) {
             val config = loadModelConfigForUi().copy(thinkingEnabled = thinkingEnabled)
+            val modelImages = pendingImages.map { p ->
+                AgentModelClient.ModelImage(
+                    dataUrl = p.dataUrl,
+                    mimeType = p.mimeType,
+                    bytes = 0,
+                    source = "user_attach",
+                )
+            }
             val result = AgentRuntimeClient(appContext, AndroidAgentLogger).run(
                 request = AgentRuntimeWire.RunRequest(
                     runId = runId,
                     prompt = prompt,
                     config = config,
-                    images = emptyList(),
+                    images = modelImages,
                     history = history,
                     handoff = AgentRuntimeWire.EntryHandoff(
                         id = runId,
@@ -256,6 +272,46 @@ internal class AgentAppState(
                 applyRunResult(runId, result)
             }
         }
+    }
+
+    fun attachImage(uri: String) {
+        scope.launch(Dispatchers.IO) {
+            val image = AgentImageCodec.fromReference(appContext, uri, "user_attach") ?: return@launch
+            val pending = PendingImageUi(
+                id = "img-${UUID.randomUUID()}",
+                uri = uri,
+                dataUrl = image.dataUrl,
+                mimeType = image.mimeType,
+            )
+            withContext(Dispatchers.Main) {
+                updateCurrentConversation(homeState.copy(pendingImages = homeState.pendingImages + pending))
+            }
+        }
+    }
+
+    fun removePendingImage(id: String) {
+        updateCurrentConversation(homeState.copy(pendingImages = homeState.pendingImages.filterNot { it.id == id }))
+    }
+
+    fun stopCurrentRun() {
+        val runId = currentRunId ?: return
+        currentRunJob?.cancel()
+        currentRunJob = null
+        currentRunId = null
+        scope.launch(Dispatchers.IO) {
+            AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId)
+        }
+        finalizeThinking(runId)
+        markRunningToolsFailed(runId, "已停止")
+        replaceAssistantMessage(
+            runId = runId,
+            content = currentAssistantContent(runId).ifBlank { "已停止" },
+            isStreaming = false,
+            renderMarkdown = false,
+        )
+        setConversationStreaming(runId, false)
+        refreshConversationSummaries()
+        persistConversations()
     }
 
     fun refreshPermissionHealth() {
@@ -320,6 +376,10 @@ internal class AgentAppState(
     }
 
     private fun applyRunResult(runId: String, result: AgentRuntimeWire.RunResult) {
+        if (runId == currentRunId) {
+            currentRunId = null
+            currentRunJob = null
+        }
         val content = if (result.ok) {
             result.content.ifBlank { "已完成。" }
         } else {

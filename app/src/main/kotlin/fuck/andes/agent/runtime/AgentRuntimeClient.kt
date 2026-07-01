@@ -121,6 +121,15 @@ internal class AgentRuntimeClient(
         }
     }
 
+    fun cancelRun(runId: String) {
+        if (runId.isBlank()) return
+        withRuntimeMessenger(Unit) { serviceMessenger ->
+            val msg = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
+            msg.data = AgentRuntimeWire.ackBundle(runId)
+            serviceMessenger.send(msg)
+        }
+    }
+
     fun ackResult(runId: String) {
         if (runId.isBlank()) return
         withRuntimeMessenger(Unit) { serviceMessenger ->

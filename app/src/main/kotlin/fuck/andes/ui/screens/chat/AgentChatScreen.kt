@@ -21,12 +21,13 @@ fun AgentChatScreen(
         input = state.input,
         isStreaming = state.isStreaming,
         thinkingEnabled = state.thinkingEnabled,
+        pendingImages = state.pendingImages,
         onInputChange = { onAction(AgentChatAction.InputChanged(it)) },
         onThinkingChange = { onAction(AgentChatAction.ThinkingToggled(it)) },
         onSend = { onAction(AgentChatAction.SendMessage) },
-        onAttach = { /* 预留附件入口 */ },
-        onScreenContext = { onAction(AgentChatAction.AttachScreenContext) },
-        onVoice = { /* 预留语音入口 */ },
+        onStop = { onAction(AgentChatAction.StopRun) },
+        onAttachImage = { uri -> onAction(AgentChatAction.ImageAttached(uri)) },
+        onRemoveImage = { id -> onAction(AgentChatAction.RemoveImage(id)) },
         onSuggestionClick = { prompt ->
             onAction(AgentChatAction.InputChanged(prompt))
             onAction(AgentChatAction.SendMessage)

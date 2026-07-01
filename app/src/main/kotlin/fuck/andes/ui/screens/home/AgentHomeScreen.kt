@@ -16,6 +16,7 @@ import fuck.andes.ui.model.AgentHomeAction
 fun AgentHomeScreen(
     state: AgentChatHomeUiState,
     onAction: (AgentHomeAction) -> Unit,
+    isDrawerOpen: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     AgentChatBody(
@@ -23,17 +24,19 @@ fun AgentHomeScreen(
         input = state.input,
         isStreaming = state.isStreaming,
         thinkingEnabled = state.thinkingEnabled,
+        pendingImages = state.pendingImages,
         onInputChange = { onAction(AgentHomeAction.InputChanged(it)) },
         onThinkingChange = { onAction(AgentHomeAction.ThinkingToggled(it)) },
         onSend = { onAction(AgentHomeAction.SendMessage) },
-        onAttach = { onAction(AgentHomeAction.OpenAttachment) },
-        onScreenContext = { onAction(AgentHomeAction.AttachScreenContext) },
-        onVoice = { onAction(AgentHomeAction.StartVoice) },
+        onStop = { onAction(AgentHomeAction.StopRun) },
+        onAttachImage = { uri -> onAction(AgentHomeAction.ImageAttached(uri)) },
+        onRemoveImage = { id -> onAction(AgentHomeAction.RemoveImage(id)) },
         onSuggestionClick = { prompt ->
             onAction(AgentHomeAction.InputChanged(prompt))
             onAction(AgentHomeAction.SendMessage)
         },
         onRunTraceClick = { onAction(AgentHomeAction.ExpandRunTrace) },
+        isDrawerOpen = isDrawerOpen,
         modifier = modifier,
     )
 }

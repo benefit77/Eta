@@ -4,9 +4,9 @@ sealed interface AgentHomeAction {
     data class InputChanged(val text: String) : AgentHomeAction
     data class ThinkingToggled(val enabled: Boolean) : AgentHomeAction
     data object SendMessage : AgentHomeAction
-    data object AttachScreenContext : AgentHomeAction
-    data object OpenAttachment : AgentHomeAction
-    data object StartVoice : AgentHomeAction
+    data object StopRun : AgentHomeAction
+    data class ImageAttached(val uri: String) : AgentHomeAction
+    data class RemoveImage(val id: String) : AgentHomeAction
     data object OpenTools : AgentHomeAction
     data object OpenPermissions : AgentHomeAction
     data object OpenSystemEnhance : AgentHomeAction
@@ -24,7 +24,9 @@ sealed interface AgentChatAction {
     data class InputChanged(val text: String) : AgentChatAction
     data class ThinkingToggled(val enabled: Boolean) : AgentChatAction
     data object SendMessage : AgentChatAction
-    data object AttachScreenContext : AgentChatAction
+    data object StopRun : AgentChatAction
+    data class ImageAttached(val uri: String) : AgentChatAction
+    data class RemoveImage(val id: String) : AgentChatAction
 }
 
 sealed interface AgentToolsAction {

@@ -8,6 +8,7 @@ data class AgentChatUiState(
     val input: String,
     val isStreaming: Boolean,
     val thinkingEnabled: Boolean,
+    val pendingImages: List<PendingImageUi> = emptyList(),
 )
 
 @Immutable
@@ -19,6 +20,7 @@ sealed interface AgentChatMessageUi {
 data class UserMessageUi(
     override val id: String,
     val content: String,
+    val images: List<String> = emptyList(),
 ) : AgentChatMessageUi
 
 @Immutable
@@ -103,3 +105,11 @@ data class SuggestionChipsMessageUi(
     override val id: String,
     val prompts: List<String>,
 ) : AgentChatMessageUi
+
+@Immutable
+data class PendingImageUi(
+    val id: String,
+    val uri: String,
+    val dataUrl: String,
+    val mimeType: String,
+)

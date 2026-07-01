@@ -109,9 +109,9 @@ fun AgentAppRoot() {
                                 is AgentHomeAction.InputChanged -> agentState.updateInput(action.text)
                                 is AgentHomeAction.ThinkingToggled -> agentState.updateThinkingEnabled(action.enabled)
                                 AgentHomeAction.SendMessage -> agentState.sendCurrentMessage()
-                                AgentHomeAction.AttachScreenContext -> Unit
-                                AgentHomeAction.OpenAttachment -> Unit
-                                AgentHomeAction.StartVoice -> Unit
+                                AgentHomeAction.StopRun -> agentState.stopCurrentRun()
+                                is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
+                                is AgentHomeAction.RemoveImage -> agentState.removePendingImage(action.id)
                                 AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
                                 AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
                                 AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
@@ -119,6 +119,7 @@ fun AgentAppRoot() {
                                 AgentHomeAction.ExpandRunTrace -> Unit
                             }
                         },
+                        isDrawerOpen = conversationPaneOpen,
                     )
                 }
             }
@@ -132,7 +133,9 @@ fun AgentAppRoot() {
                                 is AgentChatAction.InputChanged -> agentState.updateInput(action.text)
                                 is AgentChatAction.ThinkingToggled -> agentState.updateThinkingEnabled(action.enabled)
                                 AgentChatAction.SendMessage -> agentState.sendCurrentMessage()
-                                AgentChatAction.AttachScreenContext -> Unit
+                                AgentChatAction.StopRun -> agentState.stopCurrentRun()
+                                is AgentChatAction.ImageAttached -> agentState.attachImage(action.uri)
+                                is AgentChatAction.RemoveImage -> agentState.removePendingImage(action.id)
                             }
                         },
                     )

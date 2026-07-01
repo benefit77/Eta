@@ -1,6 +1,9 @@
 package fuck.andes.ui.components
 
+import android.graphics.BitmapFactory
+import android.util.Base64
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +14,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,6 +31,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,6 +56,17 @@ import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.extended.Close
 import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+@Composable
+internal fun rememberDataUrlBitmap(dataUrl: String) = remember(dataUrl) {
+    val base64 = dataUrl.substringAfter("base64,", "")
+    if (base64.isBlank()) null else {
+        runCatching {
+            val bytes = Base64.decode(base64, Base64.NO_WRAP)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }.getOrNull()
+    }
+}
 
 @Composable
 fun ChatMessageItem(
@@ -80,18 +97,43 @@ private fun UserMessageBubble(
         modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.End,
     ) {
-        Box(
+        Column(
             modifier = Modifier
                 .widthIn(max = 280.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MiuixTheme.colorScheme.primary)
                 .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.End,
         ) {
-            Text(
-                text = message.content,
-                style = MiuixTheme.textStyles.body1,
-                color = MiuixTheme.colorScheme.onPrimary,
-            )
+            if (message.images.isNotEmpty()) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    message.images.forEach { dataUrl ->
+                        val bitmap = rememberDataUrlBitmap(dataUrl)
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(120.dp)
+                                    .clip(RoundedCornerShape(6.dp)),
+                                contentScale = ContentScale.Crop,
+                            )
+                        }
+                    }
+                }
+                if (message.content.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+            }
+            if (message.content.isNotBlank()) {
+                Text(
+                    text = message.content,
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.onPrimary,
+                )
+            }
         }
     }
 }
