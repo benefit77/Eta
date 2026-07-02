@@ -1,6 +1,7 @@
 package fuck.andes.hook.breeno
 
 import fuck.andes.agent.model.AgentModelClient
+import fuck.andes.agent.runtime.AgentEvent
 import fuck.andes.agent.runtime.AgentAppContext
 import fuck.andes.agent.runtime.AgentRuntimeClient
 import fuck.andes.agent.runtime.AgentRuntimeWire
@@ -42,6 +43,8 @@ internal object BreenoHooks {
         "com.heytap.speechassist.aichat.bean.AIChatViewBean"
     private const val AI_CHAT_ROOM_ID_MANAGER_CLASS =
         "com.heytap.speechassist.aichat.AIChatRoomIdManager"
+    private const val AI_CHAT_FAST_MODE_STATE_MANAGER_CLASS =
+        "com.heytap.speechassist.aichathome.chat.ui.tip.AiChatFastModeStateManager"
     private const val INSERT_RECORD_CLASS =
         "com.heytap.speechassist.aichat.repository.api.InsertRecord"
     private const val KOTLIN_FUNCTION1_CLASS = "kotlin.jvm.functions.Function1"
@@ -59,6 +62,9 @@ internal object BreenoHooks {
     private const val NATIVE_DIRECTIVE_SUPPRESS_TTL_MS = 120_000L
     private const val RECORD_TYPE_QUERY = "Q"
     private const val RECORD_TYPE_ANSWER = "A"
+    private const val BREENO_REASONING_STATE = "深度思考"
+    private const val BREENO_STREAM_FLUSH_DELAY_MS = 80L
+    private const val BREENO_STREAM_FLUSH_CHARS = 48
     private const val MAX_TEXT_CHARS = 240
     private const val RAW_LOG_CHUNK_CHARS = 3_200
     private val modelExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -70,6 +76,8 @@ internal object BreenoHooks {
     private val claimedAgentRooms = ConcurrentHashMap<String, Long>()
     private val injectedAnswerSignatures = ConcurrentHashMap<String, Long>()
     private val pendingDrainRunning = AtomicBoolean(false)
+    @Volatile
+    private var lastBreenoThinkingEnabledOverride: Boolean? = null
 
     fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
         hookOutboundMessage(module, logger, classLoader)
@@ -265,7 +273,8 @@ internal object BreenoHooks {
             recordId = stableRecordId,
             originalRecordId = stableRecordId,
             sessionId = "",
-            roomId = roomId
+            roomId = roomId,
+            thinkingEnabledOverride = currentBreenoThinkingEnabledOverride(classLoader)
         )
         val handled = startAgentRequest(
             logger = logger,
@@ -388,7 +397,7 @@ internal object BreenoHooks {
         classLoader: ClassLoader,
         message: Any?
     ): Boolean {
-        val request = extractTextRequest(message) ?: return false
+        val request = extractTextRequest(classLoader, message) ?: return false
         val prompt = resolveCustomModelPrompt(request.text) ?: return false
         if (prompt.isBlank()) return false
 
@@ -418,8 +427,17 @@ internal object BreenoHooks {
         return runCatching {
             modelExecutor.execute {
                 var ackRunId: String? = null
+                val renderRequest = request.copy(text = prompt)
+                val streamRenderer = BreenoStreamRenderer(
+                    logger = logger,
+                    classLoader = classLoader,
+                    request = renderRequest
+                )
                 val modelResponse = runCatching {
-                    val config = AgentModelClient.loadConfig()
+                    val baseConfig = AgentModelClient.loadConfig()
+                    val config = request.thinkingEnabledOverride
+                        ?.let { baseConfig.copy(thinkingEnabled = it) }
+                        ?: baseConfig
                     if (!Prefs.isEnabled(Prefs.Keys.AGENT_CUSTOM_MODEL)) {
                         error("请先在 FuckAndes 设置中启用“小布自定义模型”")
                     }
@@ -435,12 +453,16 @@ internal object BreenoHooks {
                         )
                     ) { event ->
                         logger.info("Agent event: ${event.toLogLine()}")
+                        streamRenderer.onEvent(event)
                     }
                     ackRunId = result.runId.ifBlank { null }
                     if (!result.ok) {
                         error(result.error ?: "Agent Runtime 调用失败")
                     }
-                    AgentModelClient.ModelResponse.Text(result.content)
+                    AgentModelClient.ModelResponse.Text(
+                        content = result.content,
+                        reasoningContent = result.reasoningContent
+                    )
                 }.getOrElse { throwable ->
                     AgentModelClient.ModelResponse.Text(
                         "小布自定义模型调用失败：${throwable.message ?: throwable.javaClass.simpleName}"
@@ -451,6 +473,7 @@ internal object BreenoHooks {
                     var deliveryMarked = false
                     runCatching {
                         if (!markRunDelivered(deliveredRunId)) {
+                            streamRenderer.cancel()
                             ackRunId?.let { runId -> ackRuntimeResult(logger, runId) }
                             logger.info("Breeno Agent result already delivered: runId=$deliveredRunId")
                             return@runCatching
@@ -463,8 +486,10 @@ internal object BreenoHooks {
                             roomId = roomId
                         )
                         rememberInjectedAnswer(injectedRequest, modelResponse.content)
-                        injectModelResponse(classLoader, injectedRequest, modelResponse)
-                        persistChatHistory(logger, classLoader, injectedRequest, modelResponse.content)
+                        if (!streamRenderer.finish(modelResponse, injectedRequest)) {
+                            injectModelResponse(classLoader, injectedRequest, modelResponse)
+                        }
+                        persistChatHistory(logger, classLoader, injectedRequest, modelResponse)
                         ackRunId?.let { runId ->
                             ackRuntimeResult(logger, runId)
                         }
@@ -482,7 +507,8 @@ internal object BreenoHooks {
             }
             logger.info(
                 "Breeno custom model takeover: source=$logSource, text=\"${prompt.compact()}\", " +
-                    "images=${request.images.size}, recordId=${request.recordId}, " +
+                    "images=${request.images.size}, thinking=${request.thinkingEnabledOverride}, " +
+                    "recordId=${request.recordId}, " +
                     "originalRecordId=${request.originalRecordId}, roomId=${request.roomId}"
             )
             true
@@ -497,7 +523,12 @@ internal object BreenoHooks {
         request: TextRequest,
         response: AgentModelClient.ModelResponse.Text
     ) {
-        injectStreamTextCard(classLoader, request, response.content)
+        injectStreamTextCard(
+            classLoader = classLoader,
+            request = request,
+            content = response.content,
+            reasoningContent = response.reasoningContent
+        )
     }
 
     private fun resolveCustomModelPrompt(text: String): String? {
@@ -573,6 +604,10 @@ internal object BreenoHooks {
         } else {
             "小布自定义模型调用失败：${result.error ?: "Agent Runtime 调用失败"}"
         }
+        val response = AgentModelClient.ModelResponse.Text(
+            content = content,
+            reasoningContent = if (result.ok) result.reasoningContent else ""
+        )
         var deliveryMarked = false
         runCatching {
             if (!markRunDelivered(runId)) {
@@ -585,9 +620,14 @@ internal object BreenoHooks {
             injectModelResponse(
                 classLoader,
                 request,
-                AgentModelClient.ModelResponse.Text(content)
+                response
             )
-            persistChatHistory(logger, classLoader, request, content)
+            persistChatHistory(
+                logger = logger,
+                classLoader = classLoader,
+                request = request,
+                response = response
+            )
             ackRuntimeResult(logger, runId)
             logger.info(
                 "Breeno pending Agent result injected: runId=$runId, " +
@@ -651,6 +691,9 @@ internal object BreenoHooks {
     private fun answerSignature(roomId: String, content: String): String =
         "$roomId:${content.length}:${content.hashCode()}"
 
+    private fun JSONObject.optionalBoolean(key: String): Boolean? =
+        if (has(key) && !isNull(key)) optBoolean(key) else null
+
     private fun pruneTimedMap(
         map: ConcurrentHashMap<String, Long>,
         now: Long,
@@ -671,6 +714,9 @@ internal object BreenoHooks {
                 .put("originalRecordId", originalRecordId)
                 .put("sessionId", sessionId)
                 .put("roomId", roomId)
+                .apply {
+                    thinkingEnabledOverride?.let { put("thinkingEnabledOverride", it) }
+                }
                 .toString()
         )
 
@@ -689,7 +735,8 @@ internal object BreenoHooks {
                 recordId = recordId,
                 originalRecordId = json.optString("originalRecordId").ifBlank { recordId },
                 sessionId = json.optString("sessionId"),
-                roomId = json.optString("roomId")
+                roomId = json.optString("roomId"),
+                thinkingEnabledOverride = json.optionalBoolean("thinkingEnabledOverride")
             )
         }.getOrNull()
     }
@@ -702,14 +749,22 @@ internal object BreenoHooks {
         }
     }
 
-    private fun extractTextRequest(message: Any?): TextRequest? {
+    private fun extractTextRequest(classLoader: ClassLoader, message: Any?): TextRequest? {
         if (message == null) return null
         val events = HookSupport.invokeNoArgs(message, "getEvents") as? Iterable<*> ?: return null
+        val eventList = events.toList()
         val recordId = invokeString(message, "getRecordId").orEmpty()
         val originalRecordId = invokeString(message, "getOriginalRecordId").orEmpty()
         val sessionId = invokeString(message, "getSessionId").orEmpty()
         val roomId = invokeString(message, "getRoomId").orEmpty()
-        for (event in events) {
+        val messageThinkingEnabledOverride = extractThinkingEnabledOverride(eventList)
+        if (messageThinkingEnabledOverride != null) {
+            lastBreenoThinkingEnabledOverride = messageThinkingEnabledOverride
+        }
+        val thinkingEnabledOverride = messageThinkingEnabledOverride
+            ?: lastBreenoThinkingEnabledOverride
+            ?: currentBreenoThinkingEnabledOverride(classLoader)
+        for (event in eventList) {
             val header = HookSupport.invokeNoArgs(event ?: continue, "getHeader")
             val namespace = invokeString(header, "getNamespace")
             val name = invokeString(header, "getName")
@@ -727,16 +782,205 @@ internal object BreenoHooks {
                 recordId = recordId,
                 originalRecordId = originalRecordId,
                 sessionId = sessionId,
-                roomId = roomId
+                roomId = roomId,
+                thinkingEnabledOverride = thinkingEnabledOverride
             )
         }
         return null
     }
 
+    private fun extractThinkingEnabledOverride(events: Iterable<*>): Boolean? =
+        events.firstNotNullOfOrNull { event ->
+            val header = HookSupport.invokeNoArgs(event ?: return@firstNotNullOfOrNull null, "getHeader")
+            val namespace = invokeString(header, "getNamespace")
+            val name = invokeString(header, "getName")
+            if (namespace != "Client" || name != "ThinkingModeSwitch") {
+                return@firstNotNullOfOrNull null
+            }
+            val payload = HookSupport.invokeNoArgs(event, "getPayload")
+            thinkingEnabledFromMode(invokeString(payload, "getThinkMode"))
+        }
+
+    private fun currentBreenoThinkingEnabledOverride(classLoader: ClassLoader): Boolean? =
+        singletonInstance(classLoader, AI_CHAT_FAST_MODE_STATE_MANAGER_CLASS)
+            ?.let { manager -> invokeCompatible(manager, "h") as? Boolean }
+            ?.let { fastModeEnabled -> !fastModeEnabled }
+
+    private fun thinkingEnabledFromMode(mode: String?): Boolean? =
+        when (mode?.trim()?.lowercase()) {
+            "origin" -> true
+            "fast" -> false
+            else -> null
+        }
+
+    private class BreenoStreamRenderer(
+        private val logger: ModuleLogger,
+        private val classLoader: ClassLoader,
+        private val request: TextRequest
+    ) {
+        private val handler = Handler(Looper.getMainLooper())
+        private val uniqueId = System.currentTimeMillis().toString()
+        private val pendingReasoning = StringBuilder()
+        private val flushRunnable = Runnable {
+            flushScheduled = false
+            flushPending(isFinal = false)
+        }
+
+        private var flushScheduled = false
+        private var created = false
+        private var disabled = false
+        private var finished = false
+        private var streamedReasoningChars = 0
+        private var reasoningState: String? = null
+
+        fun onEvent(event: AgentEvent) {
+            if (finished || disabled) return
+            when (event) {
+                is AgentEvent.AssistantReasoningDelta -> {
+                    if (event.delta.isBlank()) return
+                    reasoningState = BREENO_REASONING_STATE
+                    pendingReasoning.append(event.delta)
+                    scheduleFlush(force = pendingReasoning.length >= BREENO_STREAM_FLUSH_CHARS)
+                }
+
+                is AgentEvent.ToolStarted -> {
+                    if (!created && pendingReasoning.isEmpty()) return
+                    reasoningState = "正在使用${event.name.toBreenoToolLabel()}"
+                    scheduleFlush(force = true)
+                }
+
+                is AgentEvent.ToolFinished -> {
+                    if (!created && pendingReasoning.isEmpty()) return
+                    reasoningState = BREENO_REASONING_STATE
+                    scheduleFlush(force = true)
+                }
+
+                else -> Unit
+            }
+        }
+
+        fun finish(
+            response: AgentModelClient.ModelResponse.Text,
+            fallbackRequest: TextRequest
+        ): Boolean {
+            if (disabled) return false
+            finished = true
+            handler.removeCallbacks(flushRunnable)
+            flushScheduled = false
+            if (!flushPending(isFinal = false)) return false
+
+            val finalRequest = fallbackRequest.copy(text = request.text)
+            val missingReasoning = response.reasoningContent.drop(streamedReasoningChars)
+            val finalState = if (response.reasoningContent.isNotBlank()) {
+                BREENO_REASONING_STATE
+            } else {
+                reasoningState
+            }
+            return sendFrame(
+                request = finalRequest,
+                content = response.content,
+                reasoningContent = missingReasoning,
+                reasoningState = finalState,
+                isFinal = true
+            )
+        }
+
+        fun cancel() {
+            finished = true
+            handler.removeCallbacks(flushRunnable)
+        }
+
+        private fun scheduleFlush(force: Boolean) {
+            if (force) {
+                handler.removeCallbacks(flushRunnable)
+                flushScheduled = false
+                flushPending(isFinal = false)
+                return
+            }
+            if (flushScheduled) return
+            flushScheduled = true
+            handler.postDelayed(flushRunnable, BREENO_STREAM_FLUSH_DELAY_MS)
+        }
+
+        private fun flushPending(isFinal: Boolean): Boolean {
+            val reasoningDelta = pendingReasoning.toString()
+            if (reasoningDelta.isBlank() && !isFinal) return true
+            pendingReasoning.clear()
+            return sendFrame(
+                request = request,
+                content = "",
+                reasoningContent = reasoningDelta,
+                reasoningState = reasoningState,
+                isFinal = isFinal
+            )
+        }
+
+        private fun sendFrame(
+            request: TextRequest,
+            content: String,
+            reasoningContent: String,
+            reasoningState: String?,
+            isFinal: Boolean
+        ): Boolean {
+            if (disabled) return false
+            if (content.isBlank() && reasoningContent.isBlank() && reasoningState.isNullOrBlank() && !isFinal) {
+                return true
+            }
+            val roomId = request.roomId.ifBlank { currentRoomId(classLoader) }
+            if (roomId.isBlank()) return true
+            val frameRequest = request.copy(roomId = roomId)
+            return runCatching {
+                val wasCreated = created
+                rememberInjectedAnswer(frameRequest, content)
+                injectStreamTextCard(
+                    classLoader = classLoader,
+                    request = frameRequest,
+                    content = content,
+                    reasoningContent = reasoningContent,
+                    reasoningState = reasoningState,
+                    isFinal = isFinal,
+                    type = if (created) 0 else 2,
+                    uniqueId = uniqueId
+                )
+                created = true
+                streamedReasoningChars += reasoningContent.length
+                if (!wasCreated || isFinal) {
+                    logger.info(
+                        "Breeno stream frame injected: type=${if (wasCreated) 0 else 2}, " +
+                            "final=$isFinal, content=${content.length}, " +
+                            "reasoning=${reasoningContent.length}, roomId=$roomId"
+                    )
+                }
+                true
+            }.getOrElse { throwable ->
+                disabled = true
+                logger.warn(
+                    "Breeno: 流式注入失败，回退最终注入: " +
+                        (throwable.message ?: throwable.javaClass.simpleName)
+                )
+                false
+            }
+        }
+
+        private fun String.toBreenoToolLabel(): String =
+            when (this) {
+                "terminal",
+                "run_command" -> "系统工具"
+                "open_app" -> "应用工具"
+                "screenshot" -> "屏幕工具"
+                else -> "工具"
+            }
+    }
+
     private fun injectStreamTextCard(
         classLoader: ClassLoader,
         request: TextRequest,
-        content: String
+        content: String,
+        reasoningContent: String,
+        reasoningState: String? = if (reasoningContent.isNotBlank()) BREENO_REASONING_STATE else null,
+        isFinal: Boolean = true,
+        type: Int = 2,
+        uniqueId: String = System.currentTimeMillis().toString()
     ) {
         val directiveClass = Class.forName(DIRECTIVE_CLASS, false, classLoader)
         val headerClass = Class.forName(DIRECTIVE_HEADER_CLASS, false, classLoader)
@@ -753,11 +997,17 @@ internal object BreenoHooks {
         val payload = streamTextCardClass.getDeclaredConstructor().newInstance()
         invokeCompatible(payload, "setContent", content)
         invokeCompatible(payload, "setRoomId", request.roomId)
-        invokeCompatible(payload, "setFinal", java.lang.Boolean.TRUE)
-        invokeCompatible(payload, "setType", Integer.valueOf(2))
+        invokeCompatible(payload, "setFinal", java.lang.Boolean.valueOf(isFinal))
+        invokeCompatible(payload, "setType", Integer.valueOf(type))
         invokeCompatible(payload, "setQuery", request.text)
         invokeCompatible(payload, "setHtml", java.lang.Boolean.FALSE)
         invokeCompatible(payload, "setCharPerSec", Integer.valueOf(50))
+        if (reasoningContent.isNotBlank()) {
+            invokeCompatible(payload, "setReasoningContent", reasoningContent)
+        }
+        if (!reasoningState.isNullOrBlank()) {
+            invokeCompatible(payload, "setReasoningState", reasoningState)
+        }
 
         val directive = directiveClass.getDeclaredConstructor().newInstance()
         invokeCompatible(directive, "setHeader", header)
@@ -767,7 +1017,16 @@ internal object BreenoHooks {
         setPayload.invoke(directive, payload)
 
         val directives = arrayListOf(directive)
-        val origin = buildInjectedDownstreamJson(header, content, request)
+        val origin = buildInjectedDownstreamJson(
+            header = header,
+            content = content,
+            reasoningContent = reasoningContent,
+            reasoningState = reasoningState,
+            request = request,
+            isFinal = isFinal,
+            type = type,
+            uniqueId = uniqueId
+        )
         val agent = getAgent(classLoader)
             ?: error("HeytapSpeechEngine.mAgent is null")
         invokeCompatible(agent, "j", directives, origin)
@@ -811,13 +1070,21 @@ internal object BreenoHooks {
     private fun buildInjectedDownstreamJson(
         header: Any,
         content: String,
-        request: TextRequest
+        reasoningContent: String,
+        reasoningState: String?,
+        request: TextRequest,
+        isFinal: Boolean,
+        type: Int,
+        uniqueId: String
     ): String {
-        val uniqueId = System.currentTimeMillis().toString()
         val directive = buildStreamTextCardJson(
             headerId = invokeString(header, "getId") ?: newCompactId(),
             content = content,
-            request = request
+            reasoningContent = reasoningContent,
+            reasoningState = reasoningState,
+            request = request,
+            isFinal = isFinal,
+            type = type
         )
         return JSONObject()
             .put("version", "3.0")
@@ -836,7 +1103,7 @@ internal object BreenoHooks {
         logger: ModuleLogger,
         classLoader: ClassLoader,
         request: TextRequest,
-        content: String
+        response: AgentModelClient.ModelResponse.Text
     ) {
         runCatching {
             val roomId = request.roomId.ifBlank { currentRoomId(classLoader) }
@@ -860,9 +1127,12 @@ internal object BreenoHooks {
             val answerRecord = newInsertRecord(
                 classLoader = classLoader,
                 recordId = recordId,
-                content = content,
+                content = response.content,
                 type = RECORD_TYPE_ANSWER,
-                payload = buildHistoryPayloadJson(content, request.copy(recordId = recordId, roomId = roomId))
+                payload = buildHistoryPayloadJson(
+                    response = response,
+                    request = request.copy(recordId = recordId, roomId = roomId)
+                )
             )
             invokeCompatible(
                 repository,
@@ -889,15 +1159,26 @@ internal object BreenoHooks {
         }
     }
 
-    private fun buildHistoryPayloadJson(content: String, request: TextRequest): String =
+    private fun buildHistoryPayloadJson(
+        response: AgentModelClient.ModelResponse.Text,
+        request: TextRequest
+    ): String =
         JSONObject()
             .put(
                 "uiDirectives",
                 JSONArray().put(
                     buildStreamTextCardJson(
                         headerId = newCompactId(),
-                        content = content,
-                        request = request
+                        content = response.content,
+                        reasoningContent = response.reasoningContent,
+                        reasoningState = if (response.reasoningContent.isNotBlank()) {
+                            BREENO_REASONING_STATE
+                        } else {
+                            null
+                        },
+                        request = request,
+                        isFinal = true,
+                        type = 2
                     )
                 )
             )
@@ -906,7 +1187,11 @@ internal object BreenoHooks {
     private fun buildStreamTextCardJson(
         headerId: String,
         content: String,
-        request: TextRequest
+        reasoningContent: String,
+        reasoningState: String?,
+        request: TextRequest,
+        isFinal: Boolean,
+        type: Int
     ): JSONObject =
         JSONObject()
             .put(
@@ -923,11 +1208,19 @@ internal object BreenoHooks {
                 JSONObject()
                     .put("content", content)
                     .put("roomId", request.roomId)
-                    .put("isFinal", true)
-                    .put("type", 2)
+                    .put("isFinal", isFinal)
+                    .put("type", type)
                     .put("query", request.text)
                     .put("isHtml", false)
                     .put("charPerSec", 50)
+                    .apply {
+                        if (reasoningContent.isNotBlank()) {
+                            put("reasoningContent", reasoningContent)
+                        }
+                        if (!reasoningState.isNullOrBlank()) {
+                            put("reasoningState", reasoningState)
+                        }
+                    }
             )
 
     private fun newInsertRecord(
@@ -1194,7 +1487,8 @@ internal object BreenoHooks {
 
     private fun AgentModelClient.ModelResponse.summary(): String =
         when (this) {
-            is AgentModelClient.ModelResponse.Text -> "text"
+            is AgentModelClient.ModelResponse.Text ->
+                "text(content=${content.length}, reasoning=${reasoningContent.length})"
         }
 
     private data class TextRequest(
@@ -1204,6 +1498,7 @@ internal object BreenoHooks {
         val recordId: String,
         val originalRecordId: String,
         val sessionId: String,
-        val roomId: String
+        val roomId: String,
+        val thinkingEnabledOverride: Boolean? = null
     )
 }

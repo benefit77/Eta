@@ -213,7 +213,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     val result = AgentRuntimeWire.RunResult(
                         runId = request.runId,
                         ok = true,
-                        content = response.content
+                        content = response.content,
+                        reasoningContent = response.reasoningContent
                     )
                     persistCompletedRun(request, result)
                     if (activeRunController == runController) {

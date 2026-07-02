@@ -80,6 +80,7 @@ internal object AgentRuntimeResultStore {
                     .put("runId", run.result.runId)
                     .put("ok", run.result.ok)
                     .put("content", run.result.content)
+                    .put("reasoningContent", run.result.reasoningContent)
                     .put("error", run.result.error)
             )
 
@@ -98,7 +99,9 @@ internal object AgentRuntimeResultStore {
                     runId = result.optString("runId").ifBlank { json.optString("runId") },
                     ok = result.optBoolean("ok"),
                     content = result.optString("content"),
-                    error = result.optString("error").ifBlank { null }
+                    error = result.optString("error").ifBlank { null },
+                    reasoningContent = result.optString("reasoningContent")
+                        .ifBlank { result.optString("reasoning_content") }
                 )
             )
         }.getOrNull()

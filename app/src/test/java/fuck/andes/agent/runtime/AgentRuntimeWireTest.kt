@@ -100,4 +100,18 @@ class AgentRuntimeWireTest {
             assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
         }
     }
+
+    @Test
+    fun runResultBundleRoundTripPreservesReasoningContent() {
+        val result = AgentRuntimeWire.RunResult(
+            runId = "run-1",
+            ok = true,
+            content = "最终回答",
+            reasoningContent = "先分析问题，再调用工具，最后总结。",
+        )
+
+        val roundTripped = AgentRuntimeWire.runResultFromBundle(AgentRuntimeWire.toBundle(result))
+
+        assertEquals(result, roundTripped)
+    }
 }

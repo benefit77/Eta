@@ -63,6 +63,7 @@ internal object AgentRuntimeWire {
     private const val KEY_SOURCE = "source"
     private const val KEY_OK = "ok"
     private const val KEY_CONTENT = "content"
+    private const val KEY_REASONING_CONTENT = "reasoning_content"
     private const val KEY_ERROR = "error"
     private const val KEY_RESULT = "result"
     private const val KEY_HANDOFF = "handoff"
@@ -85,7 +86,8 @@ internal object AgentRuntimeWire {
         val runId: String,
         val ok: Boolean,
         val content: String,
-        val error: String? = null
+        val error: String? = null,
+        val reasoningContent: String = ""
     )
 
     data class EntryHandoff(
@@ -187,6 +189,7 @@ internal object AgentRuntimeWire {
         putString(KEY_RUN_ID, result.runId)
         putBoolean(KEY_OK, result.ok)
         putString(KEY_CONTENT, result.content)
+        putString(KEY_REASONING_CONTENT, result.reasoningContent)
         putString(KEY_ERROR, result.error)
     }
 
@@ -195,7 +198,8 @@ internal object AgentRuntimeWire {
             runId = bundle.getString(KEY_RUN_ID).orEmpty(),
             ok = bundle.getBoolean(KEY_OK),
             content = bundle.getString(KEY_CONTENT).orEmpty(),
-            error = bundle.getString(KEY_ERROR)
+            error = bundle.getString(KEY_ERROR),
+            reasoningContent = bundle.getString(KEY_REASONING_CONTENT).orEmpty()
         )
 
     fun toBundle(completedRun: CompletedRun): Bundle = Bundle().apply {

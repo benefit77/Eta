@@ -43,10 +43,12 @@ internal object AgentModelClient {
                 terminalTools = config.terminalTools
             )
         )
+        val reasoningContent = StringBuilder()
         var round = 1
         while (true) {
             runController.throwIfCancelled()
             onEvent(AgentEvent.RoundStarted(round = round, messageCount = messages.length()))
+            val reasoningLengthBeforeRound = reasoningContent.length
             val providerResponse = provider.complete(
                 request = ProviderRequest(
                     config = config,
@@ -55,15 +57,22 @@ internal object AgentModelClient {
                 ),
                 runController = runController
             ) { providerEvent ->
+                if (providerEvent is ProviderEvent.ReasoningDelta) {
+                    reasoningContent.append(providerEvent.delta)
+                }
                 providerEvent.toAgentEvent(round)?.let(onEvent)
             }
             val assistantMessage = providerResponse.assistantMessage
             val toolCalls = parseToolCalls(assistantMessage)
+            val assistantReasoning = assistantMessage.optString("reasoning_content")
+            if (assistantReasoning.isNotBlank() && reasoningContent.length == reasoningLengthBeforeRound) {
+                reasoningContent.append(assistantReasoning)
+            }
             onEvent(
                 AgentEvent.AssistantReceived(
                     round = round,
                     contentChars = assistantMessage.optString("content").length,
-                    reasoningContent = assistantMessage.optString("reasoning_content"),
+                    reasoningContent = assistantReasoning,
                     toolNames = toolCalls.map { it.name }
                 )
             )
@@ -122,7 +131,10 @@ internal object AgentModelClient {
             val content = assistantMessage.optString("content").trim()
             if (content.isNotBlank() && content != "null") {
                 onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
-                return ModelResponse.Text(content)
+                return ModelResponse.Text(
+                    content = content,
+                    reasoningContent = reasoningContent.toString().trim()
+                )
             }
             val finishReason = assistantMessage.optString("finish_reason")
             error("模型接口第 $round 轮返回为空${finishReason.ifBlank { "" }}")
@@ -1141,6 +1153,9 @@ internal object AgentModelClient {
     )
 
     sealed interface ModelResponse {
-        data class Text(val content: String) : ModelResponse
+        data class Text(
+            val content: String,
+            val reasoningContent: String = ""
+        ) : ModelResponse
     }
 }
