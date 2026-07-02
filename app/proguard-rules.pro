@@ -24,18 +24,15 @@
 # 允许入口类混淆时，需要同步改写 java_init.list，避免 release 裁剪后模块失效。
 -dontwarn io.github.libxposed.annotation.**
 -adaptresourcefilecontents META-INF/xposed/java_init.list
--keep,allowoptimization,allowobfuscation public class * extends io.github.libxposed.api.XposedModule {
+-keep,allowoptimization,allowobfuscation class fuck.andes.ModuleMain {
     public <init>();
 }
 
-# Compose 编译器生成的 Composable Lambda 与 Composable 主体依赖运行时反射，
-# R8 默认规则已覆盖 androidx.compose.**；这里仅保留 miuix（KMP 库，反射面不可控）。
--keep class top.yukonga.miuix.** { *; }
+# R8 默认规则已覆盖 Compose 运行时；Miuix 图标是普通 Kotlin 代码，允许 R8 裁掉未使用图标。
+# -dontwarn 仅抑制 KMP 依赖在 Android 侧可能出现的可选平台 warning，不阻止裁剪。
 -dontwarn top.yukonga.miuix.**
 
-# libxposed service 库的 binder/Parcelable 反射需保护，避免 release 裁剪后 RemotePreferences 失效。
--keep class io.github.libxposed.service.** { *; }
+# libxposed service 通过静态调用和 manifest provider 接入，交给 R8/Android 默认规则保留可达代码。
 -dontwarn io.github.libxposed.service.**
 
-# 模块配置读写依赖的 SharedPreferences 与枚举键，避免 release 裁剪枚举导致 key 失配。
--keep class fuck.andes.config.** { *; }
+# 配置 key 是字符串常量并通过静态调用访问，不需要保留类名或成员名。
