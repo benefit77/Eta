@@ -70,6 +70,9 @@ internal object AgentRuntimeWire {
     private const val KEY_HANDOFF_ID = "handoff_id"
     private const val KEY_HANDOFF_SOURCE = "handoff_source"
     private const val KEY_HANDOFF_PAYLOAD = "handoff_payload"
+    private const val KEY_HANDOFF_DISMISS_ENTRY_SURFACE_ON_FOREGROUND_OPERATION =
+        "handoff_dismiss_entry_surface_on_foreground_operation"
+    private const val LEGACY_BREENO_HANDOFF_SOURCE = "breeno"
     private const val KEY_CREATED_AT = "created_at"
     private const val KEY_RESULTS = "results"
 
@@ -93,7 +96,8 @@ internal object AgentRuntimeWire {
     data class EntryHandoff(
         val id: String,
         val source: String,
-        val payload: String
+        val payload: String,
+        val dismissEntrySurfaceOnForegroundOperation: Boolean = false
     )
 
     data class CompletedRun(
@@ -176,14 +180,27 @@ internal object AgentRuntimeWire {
         putString(KEY_HANDOFF_ID, handoff.id)
         putString(KEY_HANDOFF_SOURCE, handoff.source)
         putString(KEY_HANDOFF_PAYLOAD, handoff.payload)
+        putBoolean(
+            KEY_HANDOFF_DISMISS_ENTRY_SURFACE_ON_FOREGROUND_OPERATION,
+            handoff.dismissEntrySurfaceOnForegroundOperation
+        )
     }
 
-    fun entryHandoffFromBundle(bundle: Bundle): EntryHandoff =
-        EntryHandoff(
+    fun entryHandoffFromBundle(bundle: Bundle): EntryHandoff {
+        val source = bundle.getString(KEY_HANDOFF_SOURCE).orEmpty()
+        return EntryHandoff(
             id = bundle.getString(KEY_HANDOFF_ID).orEmpty(),
-            source = bundle.getString(KEY_HANDOFF_SOURCE).orEmpty(),
-            payload = bundle.getString(KEY_HANDOFF_PAYLOAD).orEmpty()
+            source = source,
+            payload = bundle.getString(KEY_HANDOFF_PAYLOAD).orEmpty(),
+            dismissEntrySurfaceOnForegroundOperation = if (
+                bundle.containsKey(KEY_HANDOFF_DISMISS_ENTRY_SURFACE_ON_FOREGROUND_OPERATION)
+            ) {
+                bundle.getBoolean(KEY_HANDOFF_DISMISS_ENTRY_SURFACE_ON_FOREGROUND_OPERATION)
+            } else {
+                source == LEGACY_BREENO_HANDOFF_SOURCE
+            }
         )
+    }
 
     fun toBundle(result: RunResult): Bundle = Bundle().apply {
         putString(KEY_RUN_ID, result.runId)

@@ -27,11 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SweepGradient
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -46,7 +43,6 @@ import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.extended.Close
 import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.icon.extended.Play
@@ -80,21 +76,14 @@ private fun phaseAccent(phase: AgentOverlayPhase): Color = when (phase) {
  * 屏幕四边氛围光窗口：全屏触摸穿透。
  * - RUNNING：半透明黑底压暗 + 彩虹色旋转 SweepGradient 光圈。
  * - PAUSED：完全透明（让用户操作设备），光球和卡片自身提示暂停。
- * - FINISHED / FAILED：轻微压暗 + 静态光圈。
+ * - FINISHED / FAILED：不再绘制氛围光，只保留结果卡片。
  */
 @Composable
 internal fun AgentOverlayGlow(state: AgentOverlayState) {
     val phase = state.phase
-    // 暂停态：不压暗、不画光圈，让用户自由操作设备
-    if (phase == AgentOverlayPhase.PAUSED) return
+    if (phase != AgentOverlayPhase.RUNNING) return
 
-    val dimAlpha = when (phase) {
-        AgentOverlayPhase.RUNNING -> 0.31f
-        AgentOverlayPhase.FINISHED -> 0.10f
-        AgentOverlayPhase.FAILED -> 0.20f
-        else -> 0f
-    }
-    val rotating = phase == AgentOverlayPhase.RUNNING
+    val dimAlpha = 0.31f
     val transition = rememberInfiniteTransition(label = "glow")
     val rotation by transition.animateFloat(
         initialValue = 0f,
@@ -102,7 +91,6 @@ internal fun AgentOverlayGlow(state: AgentOverlayState) {
         animationSpec = infiniteRepeatable(tween(5000), RepeatMode.Restart),
         label = "rotation",
     )
-    val displayRotation = if (rotating) rotation else 0f
 
     Box(
         modifier = Modifier.fillMaxSize().drawBehind {
@@ -130,7 +118,7 @@ internal fun AgentOverlayGlow(state: AgentOverlayState) {
                 }
                 val shader = android.graphics.SweepGradient(cx, cy, colorsArgb.toIntArray(), positions)
                 val matrix = android.graphics.Matrix()
-                matrix.setRotate(displayRotation, cx, cy)
+                matrix.setRotate(rotation, cx, cy)
                 shader.setLocalMatrix(matrix)
                 paint.shader = shader
                 val rect = android.graphics.RectF(0f, 0f, w, h)
@@ -275,13 +263,23 @@ private fun TaskStatusPanel(
                     fontSize = MiuixTheme.textStyles.body2.fontSize,
                 )
             }
-            IconButton(onClick = onCollapse) {
-                Icon(
-                    imageVector = MiuixIcons.ExpandMore,
-                    contentDescription = "收起",
-                    modifier = Modifier.size(20.dp),
-                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
+            val finalPhase = state.phase == AgentOverlayPhase.FINISHED || state.phase == AgentOverlayPhase.FAILED
+            IconButton(onClick = if (finalPhase) onStop else onCollapse) {
+                if (finalPhase) {
+                    Icon(
+                        imageVector = MiuixIcons.Close,
+                        contentDescription = "关闭",
+                        modifier = Modifier.size(20.dp),
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                } else {
+                    Icon(
+                        imageVector = MiuixIcons.ExpandMore,
+                        contentDescription = "收起",
+                        modifier = Modifier.size(20.dp),
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
             }
         }
 
@@ -292,7 +290,7 @@ private fun TaskStatusPanel(
                 modifier = Modifier.fillMaxWidth(),
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 fontSize = MiuixTheme.textStyles.footnote1.fontSize,
-                maxLines = 2,
+                maxLines = if (state.phase == AgentOverlayPhase.RUNNING) 2 else 8,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -332,7 +330,7 @@ private fun TaskStatusPanel(
 
                 AgentOverlayPhase.FINISHED, AgentOverlayPhase.FAILED -> {
                     OverlayActionButton(
-                        text = "结束",
+                        text = "关闭",
                         primary = true,
                         onClick = onStop,
                         modifier = Modifier.weight(1f),
@@ -385,18 +383,23 @@ private fun StatusGlyph(phase: AgentOverlayPhase, modifier: Modifier = Modifier)
             tint = Color(0xFFFF9F0A),
         )
 
-        AgentOverlayPhase.FINISHED -> Icon(
-            imageVector = MiuixIcons.Basic.Check,
-            contentDescription = null,
+        AgentOverlayPhase.FINISHED -> StatusDot(
+            color = SuccessColor,
             modifier = modifier,
-            tint = SuccessColor,
         )
 
-        AgentOverlayPhase.FAILED -> Icon(
-            imageVector = MiuixIcons.Close,
-            contentDescription = null,
+        AgentOverlayPhase.FAILED -> StatusDot(
+            color = MiuixTheme.colorScheme.error,
             modifier = modifier,
-            tint = MiuixTheme.colorScheme.error,
         )
     }
+}
+
+@Composable
+private fun StatusDot(color: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.drawBehind {
+            drawCircle(color = color, radius = size.minDimension * 0.22f)
+        }
+    )
 }

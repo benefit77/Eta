@@ -110,7 +110,11 @@ internal class AgentRuntimeClient(
             return resultRef.get() ?: AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 未返回结果")
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
-            runCatching { serviceMessenger?.send(Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)) }
+            runCatching {
+                val msg = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
+                msg.data = AgentRuntimeWire.ackBundle(request.runId)
+                serviceMessenger?.send(msg)
+            }
             return AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 等待被中断")
         } finally {
             runCatching {

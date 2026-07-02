@@ -36,7 +36,7 @@ class AgentOverlayVisibilityPolicyTest {
                 round = 1,
                 contentChars = 0,
                 reasoningContent = "",
-                toolNames = listOf("run_command", "observe_screen")
+                toolNames = listOf("run_command", "search_apps")
             ),
             AgentEvent.ToolStarted(
                 round = 1,
@@ -59,7 +59,33 @@ class AgentOverlayVisibilityPolicyTest {
     }
 
     @Test
-    fun `foreground operation tools reveal operation overlay`() {
+    fun `screen observation reveals operation overlay after observation finishes`() {
+        assertFalse(
+            AgentOverlayVisibilityPolicy.shouldRevealFor(
+                AgentEvent.ToolStarted(
+                    round = 1,
+                    toolCallId = "call_observe",
+                    name = "observe_screen",
+                    argsPreview = "{}"
+                )
+            )
+        )
+        assertTrue(
+            AgentOverlayVisibilityPolicy.shouldRevealFor(
+                AgentEvent.ToolFinished(
+                    round = 1,
+                    toolCallId = "call_observe",
+                    name = "observe_screen",
+                    resultSummary = "ok",
+                    imageCount = 1,
+                    imageBytes = 2048
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `foreground operation tools reveal operation overlay before execution`() {
         assertTrue(
             AgentOverlayVisibilityPolicy.shouldRevealFor(
                 AgentEvent.ProviderToolCallDelta(
@@ -99,6 +125,30 @@ class AgentOverlayVisibilityPolicyTest {
                     resultSummary = "ok",
                     imageCount = 0,
                     imageBytes = 0
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `screen observation dismisses external entry surface before execution`() {
+        assertTrue(
+            AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(
+                AgentEvent.AssistantReceived(
+                    round = 1,
+                    contentChars = 0,
+                    reasoningContent = "",
+                    toolNames = listOf("observe_screen")
+                )
+            )
+        )
+        assertFalse(
+            AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(
+                AgentEvent.ToolStarted(
+                    round = 1,
+                    toolCallId = "call_status",
+                    name = "run_command",
+                    argsPreview = "{}"
                 )
             )
         )

@@ -24,6 +24,7 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import fuck.andes.agent.accessibility.AgentAccessibilityService
 import fuck.andes.agent.model.AgentModelClient
 import fuck.andes.agent.overlay.AgentOverlayContent
 import fuck.andes.agent.overlay.AgentOverlayGlow
@@ -38,6 +39,7 @@ import fuck.andes.agent.skill.SkillRuntime
 import fuck.andes.agent.tool.AgentLocalTools
 import fuck.andes.core.AndroidAgentLogger
 import fuck.andes.core.ModuleConfig
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.darkColorScheme
@@ -63,6 +65,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private var clientMessenger: Messenger? = null
     @Volatile
     private var activeRunController: AgentRunController? = null
+    @Volatile
+    private var activeRunId: String? = null
 
     private var windowManager: WindowManager? = null
     private var glowView: ComposeView? = null
@@ -107,6 +111,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     override fun onDestroy() {
         activeRunController?.cancel()
         activeRunController = null
+        activeRunId = null
         mainHandler.removeCallbacksAndMessages(null)
         panelView?.let { view -> runCatching { windowManager?.removeView(view) } }
         orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
@@ -138,8 +143,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 }
 
                 AgentRuntimeWire.MSG_CANCEL -> {
-                    activeRunController?.cancel()
-                    state.value = state.value.copy(statusText = "正在停止")
+                    cancelRun(msg.data?.let(AgentRuntimeWire::runIdFromBundle).orEmpty())
                 }
 
                 AgentRuntimeWire.MSG_ACK_RESULT -> {
@@ -160,6 +164,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         activeRunController?.cancel()
         val runController = AgentRunController()
         activeRunController = runController
+        activeRunId = request.runId
         runCatching {
             startService(Intent(this, AgentRuntimeService::class.java).setAction(ACTION_KEEP_ALIVE))
         }.onFailure { throwable ->
@@ -171,6 +176,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
         thread(name = "agent-runtime") {
             val archivedEvents = mutableListOf<AgentEvent>()
+            val entrySurfaceDismissed = AtomicBoolean(false)
             val skillIndexService = SkillRuntime.createIndexService(this@AgentRuntimeService)
             val skillLoader = SkillRuntime.createLoader(this@AgentRuntimeService)
             skillIndexService.seedBuiltinSkillsIfNeeded()
@@ -202,10 +208,19 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                             AndroidAgentLogger.info("Agent runtime event: ${event.toLogLine()}")
                             archivedEvents += event
                             sendEvent(event)
+                            val revealsForegroundOperation =
+                                AgentOverlayVisibilityPolicy.shouldRevealFor(event)
+                            if (
+                                AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(event) &&
+                                request.handoff?.dismissEntrySurfaceOnForegroundOperation == true &&
+                                entrySurfaceDismissed.compareAndSet(false, true)
+                            ) {
+                                dismissEntrySurfaceForForegroundOperation(request)
+                            }
                             mainHandler.post {
                                 if (activeRunController == runController) {
                                     state.value = state.value.applyEvent(event)
-                                    if (AgentOverlayVisibilityPolicy.shouldRevealFor(event)) {
+                                    if (revealsForegroundOperation) {
                                         ensureOverlayVisible()
                                     }
                                 }
@@ -226,11 +241,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     mainHandler.post {
                         if (activeRunController != runController) return@post
                         activeRunController = null
+                        activeRunId = null
+                        val finalResult = response.content.trim()
                         enterFinalState(
                             state.value.copy(
                                 phase = AgentOverlayPhase.FINISHED,
-                                statusText = "已返回结果"
-                            )
+                                statusText = "已返回结果",
+                                detailText = finalResult.ifBlank { state.value.detailText }
+                            ),
+                            keepVisible = entrySurfaceDismissed.get()
                         )
                     }
                 }.getOrElse { throwable ->
@@ -259,12 +278,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     mainHandler.post {
                         if (activeRunController != runController) return@post
                         activeRunController = null
+                        activeRunId = null
                         enterFinalState(
                             AgentOverlayState(
                                 phase = AgentOverlayPhase.FAILED,
                                 statusText = "调用失败",
                                 detailText = message
-                            )
+                            ),
+                            keepVisible = entrySurfaceDismissed.get()
                         )
                     }
                 }
@@ -272,6 +293,25 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 toolsBinding.close()
                 toolExecutor.close()
             }
+        }
+    }
+
+    private fun dismissEntrySurfaceForForegroundOperation(request: AgentRuntimeWire.RunRequest) {
+        val handoff = request.handoff ?: return
+        val service = AgentAccessibilityService.current()
+        if (service == null) {
+            AndroidAgentLogger.warn(
+                "Agent runtime: entry surface dismiss skipped, accessibility service unavailable, " +
+                    "source=${handoff.source}, runId=${request.runId}"
+            )
+            return
+        }
+        val dismissed = service.globalAction("BACK")
+        val message = "source=${handoff.source}, runId=${request.runId}"
+        if (dismissed) {
+            AndroidAgentLogger.info("Agent runtime: entry surface dismissed before foreground operation, $message")
+        } else {
+            AndroidAgentLogger.warn("Agent runtime: entry surface dismiss failed before foreground operation, $message")
         }
     }
 
@@ -348,6 +388,19 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun requestStop() {
+        if (activeRunController == null) {
+            dismissAndStop()
+            return
+        }
+        cancelRun(activeRunId.orEmpty())
+    }
+
+    private fun cancelRun(runId: String) {
+        val activeId = activeRunId
+        if (runId.isNotBlank() && activeId != null && runId != activeId) {
+            AndroidAgentLogger.info("Agent runtime: ignore stale cancel, requested=$runId, active=$activeId")
+            return
+        }
         activeRunController?.cancel()
         state.value = state.value.copy(statusText = "正在停止")
     }
@@ -529,11 +582,27 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun dpToPx(dp: Int): Int =
         (dp * resources.displayMetrics.density).toInt()
 
-    private fun enterFinalState(finalState: AgentOverlayState) {
+    private fun enterFinalState(finalState: AgentOverlayState, keepVisible: Boolean = false) {
         state.value = finalState
         clientMessenger = null
+        if (keepVisible) {
+            collapsed.value = false
+            ensureOverlayVisible()
+            removeAmbientWindows()
+            windowManager?.let(::showPanel)
+        }
         mainHandler.removeCallbacksAndMessages(hideToken)
-        mainHandler.postDelayed({ dismissAndStop() }, hideToken, HIDE_DELAY_MS)
+        val delay = if (keepVisible) RESULT_REVIEW_DELAY_MS else HIDE_DELAY_MS
+        mainHandler.postDelayed({ dismissAndStop() }, hideToken, delay)
+    }
+
+    private fun removeAmbientWindows() {
+        orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        orbView = null
+        glowView = null
+        orbParams = null
+        glowParams = null
     }
 
     private fun dismissAndStop() {
@@ -567,5 +636,6 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private companion object {
         const val ACTION_KEEP_ALIVE = "fuck.andes.agent.runtime.KEEP_ALIVE"
         const val HIDE_DELAY_MS = 2_500L
+        const val RESULT_REVIEW_DELAY_MS = 120_000L
     }
 }

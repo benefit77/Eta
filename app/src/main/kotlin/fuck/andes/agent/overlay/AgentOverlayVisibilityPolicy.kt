@@ -5,13 +5,22 @@ import fuck.andes.agent.runtime.AgentEvent
 /**
  * Decides when the system-level operation overlay should become visible.
  *
- * Chat, reasoning, shell diagnostics, file reads, skill reads, app search and
- * screen observation all have good homes in the main conversation UI. The
- * global overlay is reserved for tools that actively drive the foreground
- * Android interface.
+ * Chat, reasoning, shell diagnostics, file reads, skill reads and app search
+ * all have good homes in the main conversation UI. The global overlay is
+ * reserved for tools that actively inspect or drive the foreground Android
+ * interface.
  */
 internal object AgentOverlayVisibilityPolicy {
     fun shouldRevealFor(event: AgentEvent): Boolean = when (event) {
+        is AgentEvent.ProviderToolCallDelta -> event.name.isForegroundDrivingTool()
+        is AgentEvent.AssistantReceived -> event.toolNames.any { it.isForegroundDrivingTool() }
+        is AgentEvent.ToolStarted -> event.name.isForegroundDrivingTool()
+        is AgentEvent.ToolFinished -> event.name.isForegroundOperationTool()
+        is AgentEvent.ToolImagesAttached -> event.toolName.isForegroundOperationTool()
+        else -> false
+    }
+
+    fun shouldDismissEntrySurfaceFor(event: AgentEvent): Boolean = when (event) {
         is AgentEvent.ProviderToolCallDelta -> event.name.isForegroundOperationTool()
         is AgentEvent.AssistantReceived -> event.toolNames.any { it.isForegroundOperationTool() }
         is AgentEvent.ToolStarted -> event.name.isForegroundOperationTool()
@@ -23,7 +32,10 @@ internal object AgentOverlayVisibilityPolicy {
     private fun String?.isForegroundOperationTool(): Boolean =
         this?.trim()?.lowercase() in foregroundOperationTools
 
-    private val foregroundOperationTools = setOf(
+    private fun String?.isForegroundDrivingTool(): Boolean =
+        this?.trim()?.lowercase() in foregroundDrivingTools
+
+    private val foregroundDrivingTools = setOf(
         "launch_app",
         "open_uri",
         "tap",
@@ -40,5 +52,10 @@ internal object AgentOverlayVisibilityPolicy {
         "paste_text",
         "press_key",
         "open_system_panel",
+    )
+
+    private val foregroundOperationTools = setOf(
+        "observe_screen",
+        *foregroundDrivingTools.toTypedArray(),
     )
 }

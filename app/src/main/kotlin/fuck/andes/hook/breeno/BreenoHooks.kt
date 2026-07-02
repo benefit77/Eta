@@ -18,7 +18,9 @@ import java.lang.reflect.Proxy
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -69,7 +71,7 @@ internal object BreenoHooks {
     private const val BREENO_ARCHIVE_TITLE_CHARS = 20
     private const val MAX_TEXT_CHARS = 240
     private const val RAW_LOG_CHUNK_CHARS = 3_200
-    private val modelExecutor = Executors.newSingleThreadExecutor { runnable ->
+    private val modelExecutor = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "FuckAndes-AgentBridge").apply { isDaemon = true }
     }
     private val cdmImageCache = ConcurrentHashMap<String, List<AgentModelClient.ModelImage>>()
@@ -78,6 +80,7 @@ internal object BreenoHooks {
     private val claimedAgentRooms = ConcurrentHashMap<String, Long>()
     private val injectedAnswerSignatures = ConcurrentHashMap<String, Long>()
     private val pendingDrainRunning = AtomicBoolean(false)
+    private val activeAgentRun = AtomicReference<ActiveAgentRun?>()
     @Volatile
     private var lastBreenoThinkingEnabledOverride: Boolean? = null
 
@@ -317,6 +320,9 @@ internal object BreenoHooks {
             if (roomId.isBlank() || !isClaimedAgentRoom(roomId, NATIVE_DIRECTIVE_SUPPRESS_TTL_MS)) {
                 return@runCatching content
             }
+            if (json.optJSONObject("extend")?.optString(INJECTED_MARKER_KEY) == "true") {
+                return@runCatching content
+            }
             val directives = json.optJSONArray("directives") ?: return@runCatching content
             val kept = JSONArray()
             val removed = mutableListOf<String>()
@@ -356,7 +362,7 @@ internal object BreenoHooks {
 
     private fun shouldSuppressNativeDirective(namespace: String, name: String): Boolean =
         when (namespace) {
-            "MyAI" -> name == "LoadingStateCard"
+            "MyAI" -> name == "LoadingStateCard" || name == "StreamTextCard"
             "App",
             "AnalogClick",
             "System",
@@ -427,14 +433,20 @@ internal object BreenoHooks {
             return true
         }
         return runCatching {
-            modelExecutor.execute {
+            val renderRequest = request.copy(text = prompt)
+            val streamRenderer = BreenoStreamRenderer(
+                logger = logger,
+                classLoader = classLoader,
+                request = renderRequest
+            )
+            val runState = ActiveAgentRun(
+                runId = request.runId,
+                renderer = streamRenderer
+            )
+            activeAgentRun.getAndSet(runState)?.cancel(logger, replacementRunId = request.runId)
+            val future = modelExecutor.submit {
+                if (activeAgentRun.get() !== runState) return@submit
                 var ackRunId: String? = null
-                val renderRequest = request.copy(text = prompt)
-                val streamRenderer = BreenoStreamRenderer(
-                    logger = logger,
-                    classLoader = classLoader,
-                    request = renderRequest
-                )
                 val modelResponse = runCatching {
                     val baseConfig = AgentModelClient.loadConfig()
                     val config = request.thinkingEnabledOverride
@@ -454,8 +466,10 @@ internal object BreenoHooks {
                             handoff = request.toRuntimeHandoff(prompt)
                         )
                     ) { event ->
-                        logger.info("Agent event: ${event.toLogLine()}")
-                        streamRenderer.onEvent(event)
+                        if (activeAgentRun.get() === runState) {
+                            logger.info("Agent event: ${event.toLogLine()}")
+                            streamRenderer.onEvent(event)
+                        }
                     }
                     ackRunId = result.runId.ifBlank { null }
                     if (!result.ok) {
@@ -471,6 +485,15 @@ internal object BreenoHooks {
                     )
                 }
                 Handler(Looper.getMainLooper()).post {
+                    if (activeAgentRun.get() !== runState) {
+                        streamRenderer.cancel()
+                        ackRunId?.let { runId -> ackRuntimeResult(logger, runId) }
+                        logger.info(
+                            "Breeno obsolete Agent result skipped: " +
+                                "runId=${request.runId}, replacement=${activeAgentRun.get()?.runId.orEmpty()}"
+                        )
+                        return@post
+                    }
                     val deliveredRunId = ackRunId ?: request.runId
                     var deliveryMarked = false
                     runCatching {
@@ -505,8 +528,10 @@ internal object BreenoHooks {
                         if (deliveryMarked) deliveredRunIds.remove(deliveredRunId)
                         logger.error("Breeno: 注入自定义模型响应失败", throwable)
                     }
+                    activeAgentRun.compareAndSet(runState, null)
                 }
             }
+            runState.future = future
             logger.info(
                 "Breeno custom model takeover: source=$logSource, text=\"${prompt.compact()}\", " +
                     "images=${request.images.size}, thinking=${request.thinkingEnabledOverride}, " +
@@ -709,6 +734,7 @@ internal object BreenoHooks {
         AgentRuntimeWire.EntryHandoff(
             id = runId,
             source = BREENO_HANDOFF_SOURCE,
+            dismissEntrySurfaceOnForegroundOperation = true,
             payload = AgentExternalArchivePayload(
                 userText = userText,
                 conversationKey = sessionId
@@ -851,6 +877,20 @@ internal object BreenoHooks {
             "fast" -> false
             else -> null
         }
+
+    private class ActiveAgentRun(
+        val runId: String,
+        private val renderer: BreenoStreamRenderer
+    ) {
+        @Volatile
+        var future: Future<*>? = null
+
+        fun cancel(logger: ModuleLogger, replacementRunId: String) {
+            renderer.cancel()
+            future?.cancel(true)
+            logger.info("Breeno active Agent run replaced: runId=$runId, replacement=$replacementRunId")
+        }
+    }
 
     private class BreenoStreamRenderer(
         private val logger: ModuleLogger,
