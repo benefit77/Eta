@@ -3,8 +3,15 @@ package fuck.andes.ui.components
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +20,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -32,8 +41,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.composables.icons.lucide.R as LucideR
@@ -50,11 +61,6 @@ import fuck.andes.ui.model.ToolSummaryMessageUi
 import fuck.andes.ui.model.UserMessageUi
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.basic.Check
-import top.yukonga.miuix.kmp.icon.extended.Close
-import top.yukonga.miuix.kmp.icon.extended.ExpandMore
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -65,6 +71,123 @@ internal fun rememberDataUrlBitmap(dataUrl: String) = remember(dataUrl) {
             val bytes = Base64.decode(base64, Base64.NO_WRAP)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
         }.getOrNull()
+    }
+}
+
+/**
+ * Custom modern word-by-word streaming animation helper (Zero external dependencies)
+ */
+@Composable
+fun StreamingText(
+    text: String,
+    animate: Boolean = true,
+    chunkDelayMs: Long = 15,
+    content: @Composable (displayedText: String) -> Unit
+) {
+    var displayedText by remember { mutableStateOf(if (animate) "" else text) }
+    var previousText by remember { mutableStateOf("") }
+    var previousAnimate by remember { mutableStateOf(animate) }
+
+    LaunchedEffect(text, animate) {
+        val animateChangedFromTrueToFalse = previousAnimate && !animate
+        previousAnimate = animate
+
+        if (!animate) {
+            if (animateChangedFromTrueToFalse && displayedText.length < text.length) {
+                previousText = text
+                animateNewContent(displayedText, text, chunkDelayMs) { displayedText = it }
+            } else {
+                displayedText = text
+                previousText = text
+            }
+        } else {
+            when {
+                text.isEmpty() -> {
+                    displayedText = ""
+                    previousText = text
+                }
+                previousText.isEmpty() || !text.startsWith(previousText) -> {
+                    displayedText = ""
+                    previousText = text
+                    animateNewContent("", text, chunkDelayMs) { displayedText = it }
+                }
+                text.length > previousText.length -> {
+                    previousText = text
+                    animateNewContent(displayedText, text, chunkDelayMs) { displayedText = it }
+                }
+                else -> previousText = text
+            }
+        }
+    }
+
+    content(displayedText)
+}
+
+private suspend fun animateNewContent(
+    currentText: String,
+    fullText: String,
+    chunkDelayMs: Long,
+    onUpdate: (String) -> Unit,
+) {
+    val newContent = fullText.substring(currentText.length)
+    val chunks = splitIntoWords(newContent)
+
+    val builder = StringBuilder(currentText)
+    for (chunk in chunks) {
+        builder.append(chunk)
+        onUpdate(builder.toString())
+        kotlinx.coroutines.delay(chunkDelayMs)
+    }
+}
+
+private fun splitIntoWords(text: String): List<String> {
+    if (text.isEmpty()) return emptyList()
+
+    val chunks = mutableListOf<String>()
+    val lines = text.split('\n')
+
+    for ((index, line) in lines.withIndex()) {
+        val words = WordSplitRegex.findAll(line).map { it.value }.filter { it.isNotEmpty() }
+        chunks.addAll(words)
+        if (index < lines.size - 1) {
+            chunks.add("\n")
+        }
+    }
+
+    return chunks
+}
+
+private val WordSplitRegex = Regex("""(\s+|\S+)""")
+
+/**
+ * Custom modern three-dot typing indicator (Zero external dependencies)
+ */
+@Composable
+fun AITypingIndicator(modifier: Modifier = Modifier) {
+    val infiniteTransition = rememberInfiniteTransition(label = "dots")
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(3) { index ->
+            val delay = index * 150
+            val alpha by infiniteTransition.animateFloat(
+                initialValue = 0.3f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600, delayMillis = delay, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "alpha"
+            )
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .graphicsLayer(alpha = alpha)
+                    .background(MiuixTheme.colorScheme.onSurfaceVariantSummary, CircleShape)
+            )
+        }
     }
 }
 
@@ -86,7 +209,7 @@ fun ChatMessageItem(
     }
 }
 
-// ── 用户消息：右对齐气泡 ──────────────────────────────────────────────
+// ── 用户消息：轻盈美观气泡 ──────────────────────────────────────────────
 
 @Composable
 private fun UserMessageBubble(
@@ -94,20 +217,23 @@ private fun UserMessageBubble(
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.End,
     ) {
         Column(
             modifier = Modifier
-                .widthIn(max = 280.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .widthIn(max = 290.dp)
+                .clip(RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp))
                 .background(MiuixTheme.colorScheme.primary)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.End,
         ) {
             if (message.images.isNotEmpty()) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(bottom = 6.dp)
                 ) {
                     message.images.forEach { dataUrl ->
                         val bitmap = rememberDataUrlBitmap(dataUrl)
@@ -116,15 +242,13 @@ private fun UserMessageBubble(
                                 bitmap = bitmap,
                                 contentDescription = null,
                                 modifier = Modifier
-                                    .size(120.dp)
-                                    .clip(RoundedCornerShape(6.dp)),
+                                    .size(100.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .border(0.5.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(12.dp)),
                                 contentScale = ContentScale.Crop,
                             )
                         }
                     }
-                }
-                if (message.content.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(6.dp))
                 }
             }
             if (message.content.isNotBlank()) {
@@ -138,7 +262,7 @@ private fun UserMessageBubble(
     }
 }
 
-// ── Assistant 消息：无气泡，全宽渲染 ──────────────────────────────────
+// ── Assistant 消息：无任何繁杂头部，内容直接展现（完美还原 DeepSeek） ───────────
 
 @Composable
 private fun AgentMessageBlock(
@@ -146,33 +270,36 @@ private fun AgentMessageBlock(
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
     ) {
-        if (message.content.isBlank() && message.isStreaming) {
-            Text(
-                text = "正在回复…",
-                style = MiuixTheme.textStyles.body1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
-        } else if (message.renderMarkdown && message.content.isNotBlank()) {
-            Markdown(
-                content = message.content,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        } else {
-            Text(
-                text = message.content,
-                style = MiuixTheme.textStyles.body1,
-                color = MiuixTheme.colorScheme.onSurface,
-            )
-        }
-        message.usage?.takeUnless { it.isEmpty }?.let { usage ->
-            UsageFooter(usage = usage, modifier = Modifier.padding(top = 6.dp))
+        // AI response starts directly on the left with zero clunky headers, avatars or badges
+        StreamingText(
+            text = message.content,
+            animate = message.isStreaming
+        ) { displayedText ->
+            if (displayedText.isBlank() && message.isStreaming) {
+                AITypingIndicator(
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            } else if (message.renderMarkdown && displayedText.isNotBlank()) {
+                Markdown(
+                    content = displayedText,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else if (displayedText.isNotBlank()) {
+                Text(
+                    text = displayedText,
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+            }
         }
     }
 }
 
-// ── 思考：轻量折叠行 ──────────────────────────────────────────────────
+// ── 思考：纯文字无边框极简设计，用 Lucide 完美配对的 Chevron ───
 
 @Composable
 private fun ThinkingRow(
@@ -184,135 +311,211 @@ private fun ThinkingRow(
         if (message.isStreaming) expanded = true
         if (!message.isStreaming && message.collapsed) expanded = false
     }
+
     Column(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 3.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
         Row(
             modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
-                .background(MiuixTheme.colorScheme.surfaceContainer)
                 .clickable { expanded = !expanded }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                painter = painterResource(LucideR.drawable.lucide_ic_sparkles),
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = if (message.isStreaming) MiuixTheme.colorScheme.primary
-                    else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
-            Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = if (message.isStreaming) {
-                    "正在思考${message.elapsedSeconds?.let { " · ${it}s" }.orEmpty()}"
+                    "正在思考"
                 } else {
-                    "思考${message.elapsedSeconds?.let { " · ${it}s" }.orEmpty()}"
+                    "已思考${message.elapsedSeconds?.let { "（用时 ${it} 秒）" }.orEmpty()}"
                 },
                 style = MiuixTheme.textStyles.body2,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
             )
-            if (message.content.isNotBlank()) {
-                Icon(
-                    imageVector = MiuixIcons.ExpandMore,
-                    contentDescription = if (expanded) "收起" else "展开",
-                    modifier = Modifier.size(16.dp),
-                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            Spacer(modifier = Modifier.width(4.dp))
+            // Use exact same Lucide thin chevron right/down icons to guarantee 100% equal sizes
+            Icon(
+                painter = painterResource(
+                    if (expanded) LucideR.drawable.lucide_ic_chevron_down 
+                    else LucideR.drawable.lucide_ic_chevron_right
+                ),
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.7f),
+            )
+        }
+
+        AnimatedVisibility(visible = expanded && message.content.isNotBlank()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
+                    .padding(top = 4.dp)
+            ) {
+                // Full-height vertical accent line matching the thinking content
+                Box(
+                    modifier = Modifier
+                        .width(12.dp)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(1.5.dp)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.15f))
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = message.content,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.weight(1f)
                 )
             }
-        }
-        AnimatedVisibility(visible = expanded && message.content.isNotBlank()) {
-            Text(
-                text = message.content,
-                style = MiuixTheme.textStyles.body2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 4.dp),
-            )
         }
     }
 }
 
-// ── 工具调用：轻量 inline row ─────────────────────────────────────────
+// ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
 
 @Composable
 private fun ToolActivityInline(
     message: ToolActivityMessageUi,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    var isExpanded by remember { mutableStateOf(false) }
+
+    // Running pulse alpha
+    val pulseTransition = rememberInfiniteTransition(label = "pulse_alpha")
+    val pulseAlpha by pulseTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
+    )
+
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MiuixTheme.colorScheme.surfaceContainer)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clickable { isExpanded = !isExpanded }
+            .padding(horizontal = 16.dp, vertical = 4.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(message.status.statusColor()),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = message.toolName.toToolLabel(),
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        val detail = message.resultSummary ?: message.argumentsSummary
-        if (detail.isNotBlank()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            // Timeline line and status dot
+            Box(
+                modifier = Modifier.width(20.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                // Vertical connector line
+                Box(
+                    modifier = Modifier
+                        .width(1.5.dp)
+                        .height(32.dp)
+                        .background(MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.15f))
+                )
+                // Colored dot
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(message.status.statusColor())
+                        .graphicsLayer(alpha = if (message.status == ToolActivityStatusUi.Running) pulseAlpha else 1.0f)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Tool Icon
+            Icon(
+                painter = painterResource(message.toolName.toToolIcon()),
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.7f)
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Tool label
             Text(
-                text = detail,
-                style = MiuixTheme.textStyles.footnote2,
+                text = message.toolName.toToolLabel(),
+                style = MiuixTheme.textStyles.body2,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 120.dp),
+                modifier = Modifier.weight(1f)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Minimalist status label
+                Text(
+                    text = message.status.statusLabel(),
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = message.status.statusColor(),
+                    modifier = Modifier.graphicsLayer(alpha = if (message.status == ToolActivityStatusUi.Running) pulseAlpha else 1.0f)
+                )
+                // Use exact same Lucide thin chevron right/down icons to guarantee 100% equal sizes
+                Icon(
+                    painter = painterResource(
+                        if (isExpanded) LucideR.drawable.lucide_ic_chevron_down 
+                        else LucideR.drawable.lucide_ic_chevron_right
+                    ),
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.5f),
+                )
+            }
         }
-        Text(
-            text = message.status.statusLabel(),
-            style = MiuixTheme.textStyles.footnote2,
-            color = message.status.statusColor(),
-        )
-    }
-}
 
-// ── Usage：低存在感小标签 ─────────────────────────────────────────────
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun UsageFooter(
-    usage: TokenUsageUi,
-    modifier: Modifier = Modifier,
-) {
-    val parts = buildList {
-        usage.contextTokens?.let { add("ctx $it") }
-        usage.inputTokens?.let { add("↓$it") }
-        usage.outputTokens?.let { add("↑$it") }
-        usage.reasoningTokens?.let { add("思 $it") }
-        usage.cachedTokens?.let { add("缓存 $it") }
-    }
-    if (parts.isEmpty()) return
-    FlowRow(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        parts.forEach { part ->
-            Text(
-                text = part,
-                style = MiuixTheme.textStyles.footnote2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
+        AnimatedVisibility(visible = isExpanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 28.dp, top = 6.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black.copy(alpha = 0.02f))
+                    .border(0.5.dp, Color.Black.copy(alpha = 0.04f), RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                if (message.argumentsSummary.isNotBlank()) {
+                    Text(
+                        text = "Arguments:",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 2.dp)
+                    )
+                    Text(
+                        text = message.argumentsSummary,
+                        style = MiuixTheme.textStyles.footnote2.copy(fontFamily = FontFamily.Monospace),
+                        color = MiuixTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+                if (message.resultSummary != null && message.resultSummary.isNotBlank()) {
+                    Text(
+                        text = "Result:",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = Color(0xFF2F8F4E),
+                        modifier = Modifier.padding(bottom = 2.dp)
+                    )
+                    Text(
+                        text = message.resultSummary,
+                        style = MiuixTheme.textStyles.footnote2.copy(fontFamily = FontFamily.Monospace),
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    )
+                }
+            }
         }
     }
 }
@@ -328,28 +531,29 @@ private fun RunTraceRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 3.dp)
+            .padding(horizontal = 16.dp, vertical = 4.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(MiuixTheme.colorScheme.surfaceContainer)
+            .border(0.5.dp, MiuixTheme.colorScheme.primary.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = MiuixIcons.Basic.Check,
+            painter = painterResource(LucideR.drawable.lucide_ic_check),
             contentDescription = null,
             modifier = Modifier.size(16.dp),
             tint = MiuixTheme.colorScheme.primary,
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(
-            text = "Agent 能力",
+            text = "Agent Capabilities",
             style = MiuixTheme.textStyles.body2,
             color = MiuixTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
         Icon(
-            imageVector = MiuixIcons.ExpandMore,
+            painter = painterResource(LucideR.drawable.lucide_ic_chevron_down),
             contentDescription = null,
             modifier = Modifier.size(16.dp),
             tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -366,20 +570,34 @@ private fun ToolSummaryInline(
     modifier: Modifier = Modifier,
 ) {
     FlowRow(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 3.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         message.tools.forEach { tool ->
-            Text(
-                text = tool.toToolLabel(),
-                style = MiuixTheme.textStyles.footnote2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .background(MiuixTheme.colorScheme.surfaceContainer)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            )
+                    .background(MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.5f))
+                    .border(0.5.dp, MiuixTheme.colorScheme.primary.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    painter = painterResource(tool.toToolIcon()),
+                    contentDescription = null,
+                    modifier = Modifier.size(12.dp),
+                    tint = MiuixTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = tool.toToolLabel(),
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                )
+            }
         }
     }
 }
@@ -394,15 +612,35 @@ private fun SuggestionChipsRow(
     modifier: Modifier = Modifier,
 ) {
     FlowRow(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         message.prompts.forEach { prompt ->
-            TextButton(
-                text = prompt,
-                onClick = { onSuggestionClick(prompt) },
-            )
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MiuixTheme.colorScheme.surfaceContainer)
+                    .border(0.5.dp, MiuixTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                    .clickable { onSuggestionClick(prompt) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    painter = painterResource(LucideR.drawable.lucide_ic_sparkles),
+                    contentDescription = null,
+                    modifier = Modifier.size(12.dp),
+                    tint = MiuixTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = prompt,
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+            }
         }
     }
 }
@@ -417,9 +655,34 @@ private fun ToolActivityStatusUi.statusColor() = when (this) {
 }
 
 private fun ToolActivityStatusUi.statusLabel(): String = when (this) {
-    ToolActivityStatusUi.Running -> "运行中"
-    ToolActivityStatusUi.Success -> "完成"
-    ToolActivityStatusUi.Failed -> "失败"
+    ToolActivityStatusUi.Running -> "Running"
+    ToolActivityStatusUi.Success -> "Success"
+    ToolActivityStatusUi.Failed -> "Failed"
+}
+
+@Composable
+private fun String.toToolIcon(): Int = when (this) {
+    "observe_screen" -> LucideR.drawable.lucide_ic_scan_text
+    "tap_element" -> LucideR.drawable.lucide_ic_mouse_pointer_click
+    "tap_area" -> LucideR.drawable.lucide_ic_locate_fixed
+    "long_press" -> LucideR.drawable.lucide_ic_hand
+    "swipe" -> LucideR.drawable.lucide_ic_move
+    "scroll" -> LucideR.drawable.lucide_ic_scroll
+    "paste_text" -> LucideR.drawable.lucide_ic_clipboard_paste
+    "input_text" -> LucideR.drawable.lucide_ic_keyboard
+    "replace_text" -> LucideR.drawable.lucide_ic_replace
+    "clear_text" -> LucideR.drawable.lucide_ic_eraser
+    "wait_for_text" -> LucideR.drawable.lucide_ic_clock
+    "search_apps" -> LucideR.drawable.lucide_ic_search
+    "launch_app" -> LucideR.drawable.lucide_ic_rocket
+    "open_uri" -> LucideR.drawable.lucide_ic_external_link
+    "press_key" -> LucideR.drawable.lucide_ic_command
+    "open_system_panel" -> LucideR.drawable.lucide_ic_panel_top_open
+    "terminal", "run_command" -> LucideR.drawable.lucide_ic_square_terminal
+    "read_file" -> LucideR.drawable.lucide_ic_file_text
+    "write_file" -> LucideR.drawable.lucide_ic_file_pen
+    "list_directory" -> LucideR.drawable.lucide_ic_folder_open
+    else -> LucideR.drawable.lucide_ic_settings
 }
 
 private fun String.toToolLabel(): String = when (this) {

@@ -10,17 +10,15 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import com.composables.icons.lucide.R as LucideR
 import fuck.andes.ui.components.ConversationSidePaneScaffold
-import fuck.andes.ui.model.ConversationPaneUiState
 import fuck.andes.ui.navigation.AppRoute
+import fuck.andes.ui.model.ConversationPaneUiState
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.AddCircle
-import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.icon.extended.HorizontalSplit
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
@@ -107,14 +105,14 @@ private fun AgentTopBar(
             if (isHome) {
                 IconButton(onClick = onOpenConversationPane) {
                     Icon(
-                        imageVector = MiuixIcons.HorizontalSplit,
+                        painter = painterResource(LucideR.drawable.lucide_ic_menu),
                         contentDescription = "会话历史",
                     )
                 }
             } else {
                 IconButton(onClick = onBack) {
                     Icon(
-                        imageVector = MiuixIcons.Back,
+                        painter = painterResource(LucideR.drawable.lucide_ic_chevron_left),
                         contentDescription = "返回",
                     )
                 }
@@ -124,7 +122,7 @@ private fun AgentTopBar(
             if (isHome) {
                 IconButton(onClick = onNewConversation) {
                     Icon(
-                        imageVector = MiuixIcons.AddCircle,
+                        painter = painterResource(LucideR.drawable.lucide_ic_message_circle_plus),
                         contentDescription = "新建对话",
                     )
                 }
