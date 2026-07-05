@@ -1,6 +1,10 @@
 package fuck.andes.ui.app
 
 import android.content.Context
+import fuck.andes.data.db.ConversationEntity
+import fuck.andes.data.db.ConversationMessageEntity
+import fuck.andes.data.db.ConversationStateEntity
+import fuck.andes.data.db.FuckAndesDatabase
 import fuck.andes.ui.model.AgentChatHomeUiState
 import fuck.andes.ui.model.AgentChatMessageUi
 import fuck.andes.ui.model.AgentMessageUi
@@ -11,8 +15,12 @@ import fuck.andes.ui.model.ToolActivityStatusUi
 import fuck.andes.ui.model.ToolSummaryMessageUi
 import fuck.andes.ui.model.UserMessageUi
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import org.json.JSONObject
 
 internal object AgentConversationStore {
     data class Snapshot(
@@ -22,208 +30,229 @@ internal object AgentConversationStore {
         val updatedAt: Map<String, Long>,
     )
 
-    fun load(context: Context, defaultThinkingEnabled: Boolean): Snapshot {
-        val raw = prefs(context).getString(KEY_STATE, null).orEmpty()
-        val parsed = runCatching {
-            val root = JSONObject(raw)
-            val conversations = linkedMapOf<String, AgentChatHomeUiState>()
-            val titles = mutableMapOf<String, String>()
-            val updatedAt = mutableMapOf<String, Long>()
-            val array = root.optJSONArray("conversations") ?: JSONArray()
-            for (index in 0 until array.length()) {
-                val json = array.optJSONObject(index) ?: continue
-                val id = json.optString("id").ifBlank { newConversationId() }
-                conversations[id] = AgentChatHomeUiState(
-                    messages = json.optJSONArray("messages").toMessages(),
-                    input = "",
-                    isStreaming = false,
-                    thinkingEnabled = json.optBoolean("thinking_enabled", defaultThinkingEnabled),
-                )
-                titles[id] = json.optString("title").ifBlank { "新对话" }
-                updatedAt[id] = json.optLong("updated_at").takeIf { it > 0L }
-                    ?: System.currentTimeMillis()
-            }
-            val fallback = fallbackSnapshot(defaultThinkingEnabled)
-            if (conversations.isEmpty()) {
-                fallback
-            } else {
-                val selected = root.optString("selected_id")
-                    .takeIf { it in conversations }
-                    ?: conversations.keys.first()
-                Snapshot(
-                    selectedConversationId = selected,
-                    conversationsById = conversations,
-                    titles = titles,
-                    updatedAt = updatedAt,
-                )
-            }
-        }.getOrElse {
-            fallbackSnapshot(defaultThinkingEnabled)
-        }
-        return parsed
-    }
+    private val saveMutex = Mutex()
 
-    fun save(
+    fun load(context: Context, defaultThinkingEnabled: Boolean): Snapshot =
+        runBlocking(Dispatchers.IO) {
+            loadSnapshot(context.applicationContext, defaultThinkingEnabled)
+        }
+
+    suspend fun save(
         context: Context,
         selectedConversationId: String,
         conversationsById: Map<String, AgentChatHomeUiState>,
         titles: Map<String, String>,
         updatedAt: Map<String, Long>,
     ) {
-        val root = JSONObject()
-            .put("version", 1)
-            .put("selected_id", selectedConversationId)
-        val conversations = JSONArray()
-        conversationsById.entries
-            .sortedByDescending { (id, _) -> updatedAt[id] ?: 0L }
-            .take(MAX_STORED_CONVERSATIONS)
-            .forEach { (id, state) ->
-                conversations.put(
-                    JSONObject()
-                        .put("id", id)
-                        .put("title", titles[id] ?: "新对话")
-                        .put("updated_at", updatedAt[id] ?: System.currentTimeMillis())
-                        .put("thinking_enabled", state.thinkingEnabled)
-                        .put("messages", state.messages.toJsonArray())
-                )
-            }
-        root.put("conversations", conversations)
-        prefs(context).edit().putString(KEY_STATE, root.toString()).apply()
-    }
+        val appContext = context.applicationContext
+        saveMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val sorted = conversationsById.entries
+                    .sortedByDescending { (id, _) -> updatedAt[id] ?: 0L }
+                if (sorted.isEmpty()) return@withContext
 
-    private fun JSONArray?.toMessages(): List<AgentChatMessageUi> {
-        if (this == null) return emptyList()
-        val messages = mutableListOf<AgentChatMessageUi>()
-        for (index in 0 until length()) {
-            val json = optJSONObject(index) ?: continue
-            val id = json.optString("id").ifBlank { "msg-${UUID.randomUUID()}" }
-            when (json.optString("type")) {
-                "user" -> messages += UserMessageUi(
-                    id = id,
-                    content = json.optString("content"),
-                )
-
-                "assistant" -> messages += AgentMessageUi(
-                    id = id,
-                    content = json.optString("content"),
-                    isStreaming = false,
-                    renderMarkdown = json.optBoolean("render_markdown", true),
-                    usage = json.optJSONObject("usage")?.toUsage(),
-                )
-
-                "thinking" -> messages += ThinkingMessageUi(
-                    id = id,
-                    content = json.optString("content"),
-                    isStreaming = false,
-                    elapsedSeconds = json.optionalInt("elapsed_seconds"),
-                    collapsed = true,
-                )
-
-                "tool" -> messages += ToolActivityMessageUi(
-                    id = id,
-                    toolName = json.optString("tool_name"),
-                    status = json.optString("status").toToolStatus(),
-                    argumentsSummary = json.optString("arguments_summary"),
-                    resultSummary = json.optString("result_summary").ifBlank { null },
-                    imageCount = json.optInt("image_count"),
-                )
-
-                "tool_summary" -> messages += ToolSummaryMessageUi(
-                    id = id,
-                    tools = json.optJSONArray("tools").toStringList(),
-                )
+                val storedIds = sorted.mapTo(mutableSetOf()) { it.key }
+                val selected = selectedConversationId.takeIf { it in storedIds } ?: sorted.first().key
+                val now = System.currentTimeMillis()
+                val conversations = sorted.map { (id, state) ->
+                    ConversationEntity(
+                        id = id,
+                        title = titles[id] ?: "新对话",
+                        thinkingEnabled = state.thinkingEnabled,
+                        createdAt = updatedAt[id] ?: now,
+                        updatedAt = updatedAt[id] ?: now,
+                    )
+                }
+                val messages = sorted.flatMap { (conversationId, state) ->
+                    state.messages
+                        .mapIndexedNotNull { index, message ->
+                            message.toEntityOrNull(conversationId, index)
+                        }
+                }
+                FuckAndesDatabase.get(appContext)
+                    .conversationDao()
+                    .replaceAll(
+                        conversations = conversations,
+                        messages = messages,
+                        state = ConversationStateEntity(selectedConversationId = selected),
+                    )
             }
         }
-        return messages
     }
 
-    private fun List<AgentChatMessageUi>.toJsonArray(): JSONArray =
-        JSONArray().also { array ->
-            takeLast(MAX_STORED_MESSAGES_PER_CONVERSATION).forEach { message ->
-                message.toJsonOrNull()?.let(array::put)
-            }
+    private suspend fun loadSnapshot(
+        context: Context,
+        defaultThinkingEnabled: Boolean,
+    ): Snapshot {
+        val dao = FuckAndesDatabase.get(context).conversationDao()
+        val conversations = dao.conversations()
+        if (conversations.isEmpty()) return fallbackSnapshot(defaultThinkingEnabled)
+
+        val messagesByConversation = dao.messages().groupBy { it.conversationId }
+        val states = linkedMapOf<String, AgentChatHomeUiState>()
+        val titles = mutableMapOf<String, String>()
+        val updatedAt = mutableMapOf<String, Long>()
+
+        conversations.forEach { conversation ->
+            states[conversation.id] = AgentChatHomeUiState(
+                messages = messagesByConversation[conversation.id]
+                    .orEmpty()
+                    .sortedBy { it.sortIndex }
+                    .mapNotNull { it.toMessageOrNull() },
+                input = "",
+                isStreaming = false,
+                thinkingEnabled = conversation.thinkingEnabled,
+            )
+            titles[conversation.id] = conversation.title.ifBlank { "新对话" }
+            updatedAt[conversation.id] = conversation.updatedAt
         }
 
-    private fun AgentChatMessageUi.toJsonOrNull(): JSONObject? = when (this) {
-        is UserMessageUi -> JSONObject()
-            .put("type", "user")
-            .put("id", id)
-            .put("content", content.clipStoredText())
+        val selected = dao.state()?.selectedConversationId
+            ?.takeIf { it in states }
+            ?: states.keys.first()
 
-        is AgentMessageUi -> {
-            val content = content.clipStoredText()
-            if (content.isBlank() && isStreaming) {
-                null
-            } else {
-                JSONObject()
-                    .put("type", "assistant")
-                    .put("id", id)
-                    .put("content", content)
-                    .put("render_markdown", renderMarkdown)
-                    .also { json -> usage?.takeUnless { it.isEmpty }?.let { json.put("usage", it.toJson()) } }
-            }
-        }
-
-        is ThinkingMessageUi -> JSONObject()
-            .put("type", "thinking")
-            .put("id", id)
-            .put("content", content.clipStoredText())
-            .also { json -> elapsedSeconds?.let { json.put("elapsed_seconds", it) } }
-
-        is ToolActivityMessageUi -> JSONObject()
-            .put("type", "tool")
-            .put("id", id)
-            .put("tool_name", toolName)
-            .put("status", status.name)
-            .put("arguments_summary", argumentsSummary.clipStoredText())
-            .put("image_count", imageCount)
-            .also { json -> resultSummary?.let { json.put("result_summary", it.clipStoredText()) } }
-
-        is ToolSummaryMessageUi -> JSONObject()
-            .put("type", "tool_summary")
-            .put("id", id)
-            .put("tools", JSONArray().also { tools.forEach(it::put) })
-
-        else -> null
-    }
-
-    private fun JSONObject.toUsage(): TokenUsageUi =
-        TokenUsageUi(
-            contextTokens = optionalInt("context"),
-            inputTokens = optionalInt("input"),
-            outputTokens = optionalInt("output"),
-            reasoningTokens = optionalInt("reasoning"),
-            cachedTokens = optionalInt("cached"),
+        return Snapshot(
+            selectedConversationId = selected,
+            conversationsById = states,
+            titles = titles,
+            updatedAt = updatedAt,
         )
-
-    private fun TokenUsageUi.toJson(): JSONObject =
-        JSONObject().also { json ->
-            contextTokens?.let { json.put("context", it) }
-            inputTokens?.let { json.put("input", it) }
-            outputTokens?.let { json.put("output", it) }
-            reasoningTokens?.let { json.put("reasoning", it) }
-            cachedTokens?.let { json.put("cached", it) }
-        }
-
-    private fun JSONArray?.toStringList(): List<String> {
-        if (this == null) return emptyList()
-        return buildList {
-            for (index in 0 until length()) {
-                optString(index).takeIf { it.isNotBlank() }?.let(::add)
-            }
-        }
     }
 
-    private fun JSONObject.optionalInt(key: String): Int? =
-        if (has(key) && !isNull(key)) optInt(key) else null
+    private fun AgentChatMessageUi.toEntityOrNull(
+        conversationId: String,
+        sortIndex: Int,
+    ): ConversationMessageEntity? =
+        when (this) {
+            is UserMessageUi -> ConversationMessageEntity(
+                id = id,
+                conversationId = conversationId,
+                sortIndex = sortIndex,
+                type = TYPE_USER,
+                content = content,
+                imagesJson = images.toJsonArrayString(),
+            )
+
+            is AgentMessageUi -> {
+                if (content.isBlank() && isStreaming) {
+                    null
+                } else {
+                    ConversationMessageEntity(
+                        id = id,
+                        conversationId = conversationId,
+                        sortIndex = sortIndex,
+                        type = TYPE_ASSISTANT,
+                        content = content,
+                        renderMarkdown = renderMarkdown,
+                        contextTokens = usage?.contextTokens,
+                        inputTokens = usage?.inputTokens,
+                        outputTokens = usage?.outputTokens,
+                        reasoningTokens = usage?.reasoningTokens,
+                        cachedTokens = usage?.cachedTokens,
+                    )
+                }
+            }
+
+            is ThinkingMessageUi -> ConversationMessageEntity(
+                id = id,
+                conversationId = conversationId,
+                sortIndex = sortIndex,
+                type = TYPE_THINKING,
+                content = content,
+                elapsedSeconds = elapsedSeconds,
+            )
+
+            is ToolActivityMessageUi -> ConversationMessageEntity(
+                id = id,
+                conversationId = conversationId,
+                sortIndex = sortIndex,
+                type = TYPE_TOOL,
+                content = "",
+                toolName = toolName,
+                toolStatus = status.name,
+                argumentsSummary = argumentsSummary,
+                resultSummary = resultSummary,
+                imageCount = imageCount,
+            )
+
+            is ToolSummaryMessageUi -> ConversationMessageEntity(
+                id = id,
+                conversationId = conversationId,
+                sortIndex = sortIndex,
+                type = TYPE_TOOL_SUMMARY,
+                content = "",
+                toolsJson = tools.toJsonArrayString(),
+            )
+
+            else -> null
+        }
+
+    private fun ConversationMessageEntity.toMessageOrNull(): AgentChatMessageUi? =
+        when (type) {
+            TYPE_USER -> UserMessageUi(
+                id = id,
+                content = content,
+                images = imagesJson.toStringList(),
+            )
+
+            TYPE_ASSISTANT -> AgentMessageUi(
+                id = id,
+                content = content,
+                isStreaming = false,
+                renderMarkdown = renderMarkdown ?: true,
+                usage = TokenUsageUi(
+                    contextTokens = contextTokens,
+                    inputTokens = inputTokens,
+                    outputTokens = outputTokens,
+                    reasoningTokens = reasoningTokens,
+                    cachedTokens = cachedTokens,
+                ).takeUnless { it.isEmpty },
+            )
+
+            TYPE_THINKING -> ThinkingMessageUi(
+                id = id,
+                content = content,
+                isStreaming = false,
+                elapsedSeconds = elapsedSeconds,
+                collapsed = true,
+            )
+
+            TYPE_TOOL -> ToolActivityMessageUi(
+                id = id,
+                toolName = toolName.orEmpty(),
+                status = toolStatus.orEmpty().toToolStatus(),
+                argumentsSummary = argumentsSummary.orEmpty(),
+                resultSummary = resultSummary,
+                imageCount = imageCount,
+            )
+
+            TYPE_TOOL_SUMMARY -> ToolSummaryMessageUi(
+                id = id,
+                tools = toolsJson.toStringList(),
+            )
+
+            else -> null
+        }
 
     private fun String.toToolStatus(): ToolActivityStatusUi =
         runCatching { ToolActivityStatusUi.valueOf(this) }.getOrNull()
             ?.takeUnless { it == ToolActivityStatusUi.Running }
             ?: ToolActivityStatusUi.Failed
 
-    private fun String.clipStoredText(): String =
-        if (length > MAX_STORED_MESSAGE_CHARS) takeLast(MAX_STORED_MESSAGE_CHARS) else this
+    private fun List<String>.toJsonArrayString(): String =
+        JSONArray().also { array ->
+            forEach { array.put(it) }
+        }.toString()
+
+    private fun String.toStringList(): List<String> =
+        runCatching {
+            val array = JSONArray(this)
+            buildList {
+                for (index in 0 until array.length()) {
+                    array.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+        }.getOrDefault(emptyList())
 
     private fun fallbackSnapshot(defaultThinkingEnabled: Boolean): Snapshot {
         val id = newConversationId()
@@ -243,14 +272,11 @@ internal object AgentConversationStore {
             thinkingEnabled = thinkingEnabled,
         )
 
-    private fun prefs(context: Context) =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
     private fun newConversationId(): String = "conv-${UUID.randomUUID()}"
 
-    private const val PREFS_NAME = "agent_conversations"
-    private const val KEY_STATE = "state"
-    private const val MAX_STORED_CONVERSATIONS = 50
-    private const val MAX_STORED_MESSAGES_PER_CONVERSATION = 120
-    private const val MAX_STORED_MESSAGE_CHARS = 16_000
+    private const val TYPE_USER = "user"
+    private const val TYPE_ASSISTANT = "assistant"
+    private const val TYPE_THINKING = "thinking"
+    private const val TYPE_TOOL = "tool"
+    private const val TYPE_TOOL_SUMMARY = "tool_summary"
 }

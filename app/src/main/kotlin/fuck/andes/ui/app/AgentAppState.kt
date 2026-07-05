@@ -2,7 +2,6 @@ package fuck.andes.ui.app
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.SharedPreferences
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.runtime.getValue
@@ -744,13 +743,19 @@ internal class AgentAppState(
     }
 
     private fun persistConversations() {
-        AgentConversationStore.save(
-            context = appContext,
-            selectedConversationId = selectedConversationId,
-            conversationsById = conversationsById,
-            titles = conversationTitles,
-            updatedAt = conversationUpdatedAt,
-        )
+        val selected = selectedConversationId
+        val conversations = conversationsById
+        val titles = conversationTitles
+        val timestamps = conversationUpdatedAt
+        scope.launch(Dispatchers.IO) {
+            AgentConversationStore.save(
+                context = appContext,
+                selectedConversationId = selected,
+                conversationsById = conversations,
+                titles = titles,
+                updatedAt = timestamps,
+            )
+        }
     }
 
     private fun buildConversationHistory(messages: List<AgentChatMessageUi>): List<AgentModelClient.ConversationMessage> {

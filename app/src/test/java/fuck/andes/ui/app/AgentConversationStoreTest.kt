@@ -13,6 +13,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -26,10 +27,7 @@ class AgentConversationStoreTest {
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
-        context.getSharedPreferences("agent_conversations", Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .commit()
+        context.deleteDatabase("fuck_andes.db")
     }
 
     @Test
@@ -74,13 +72,15 @@ class AgentConversationStoreTest {
             thinkingEnabled = true,
         )
 
-        AgentConversationStore.save(
-            context = context,
-            selectedConversationId = "conv-1",
-            conversationsById = mapOf("conv-1" to conversation),
-            titles = mapOf("conv-1" to "屏幕分析"),
-            updatedAt = mapOf("conv-1" to 1234L),
-        )
+        runBlocking {
+            AgentConversationStore.save(
+                context = context,
+                selectedConversationId = "conv-1",
+                conversationsById = mapOf("conv-1" to conversation),
+                titles = mapOf("conv-1" to "屏幕分析"),
+                updatedAt = mapOf("conv-1" to 1234L),
+            )
+        }
 
         val snapshot = AgentConversationStore.load(context, defaultThinkingEnabled = false)
 
@@ -95,12 +95,67 @@ class AgentConversationStoreTest {
     }
 
     @Test
-    fun loadFallsBackWhenJsonIsInvalid() {
-        context.getSharedPreferences("agent_conversations", Context.MODE_PRIVATE)
-            .edit()
-            .putString("state", "{broken")
-            .commit()
+    fun saveAndLoadPreservesAllConversationsAndMessagesWithoutClipping() {
+        val longContent = "x".repeat(20_000)
+        val primaryMessages = buildList {
+            add(UserMessageUi(id = "conv-0-user-long", content = longContent))
+            repeat(130) { index ->
+                add(
+                    AgentMessageUi(
+                        id = "conv-0-assistant-$index",
+                        content = "assistant-$index",
+                        isStreaming = false,
+                    )
+                )
+            }
+        }
+        val conversations = buildMap {
+            put(
+                "conv-0",
+                AgentChatHomeUiState(
+                    messages = primaryMessages,
+                    input = "",
+                    isStreaming = false,
+                    thinkingEnabled = false,
+                )
+            )
+            repeat(59) { index ->
+                val id = "conv-${index + 1}"
+                put(
+                    id,
+                    AgentChatHomeUiState(
+                        messages = listOf(UserMessageUi(id = "$id-user", content = "message-$id")),
+                        input = "",
+                        isStreaming = false,
+                        thinkingEnabled = false,
+                    )
+                )
+            }
+        }
+        val titles = conversations.keys.associateWith { id -> "title-$id" }
+        val updatedAt = conversations.keys.associateWith { id -> id.removePrefix("conv-").toLong() }
 
+        runBlocking {
+            AgentConversationStore.save(
+                context = context,
+                selectedConversationId = "conv-0",
+                conversationsById = conversations,
+                titles = titles,
+                updatedAt = updatedAt,
+            )
+        }
+
+        val snapshot = AgentConversationStore.load(context, defaultThinkingEnabled = true)
+
+        assertEquals(60, snapshot.conversationsById.size)
+        val restored = snapshot.conversationsById.getValue("conv-0")
+        assertEquals(131, restored.messages.size)
+        assertEquals(longContent, (restored.messages.first() as UserMessageUi).content)
+        assertEquals("assistant-129", (restored.messages.last() as AgentMessageUi).content)
+    }
+
+    @Test
+    fun loadFallsBackWhenDatabaseIsEmpty() {
         val snapshot = AgentConversationStore.load(context, defaultThinkingEnabled = true)
 
         assertEquals(1, snapshot.conversationsById.size)
