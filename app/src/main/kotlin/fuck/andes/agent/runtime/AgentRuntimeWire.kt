@@ -4,6 +4,10 @@ import android.content.ComponentName
 import android.content.Intent
 import android.os.Bundle
 import fuck.andes.agent.model.AgentModelClient
+import fuck.andes.data.model.CustomBody
+import fuck.andes.data.model.CustomHeader
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 /**
  * AgentRuntime 跨进程通信协议。
@@ -45,13 +49,21 @@ internal object AgentRuntimeWire {
     private const val KEY_TYPE = "type"
     private const val KEY_RUN_ID = "run_id"
     private const val KEY_PROMPT = "prompt"
+    private const val KEY_PROVIDER_ID = "provider_id"
+    private const val KEY_PROVIDER_NAME = "provider_name"
+    private const val KEY_PROVIDER_TYPE = "provider_type"
     private const val KEY_BASE_URL = "base_url"
     private const val KEY_API_KEY = "api_key"
     private const val KEY_MODEL = "model"
+    private const val KEY_MODEL_DISPLAY_NAME = "model_display_name"
     private const val KEY_SYSTEM_PROMPT = "system_prompt"
+    private const val KEY_ANTHROPIC_VERSION = "anthropic_version"
+    private const val KEY_OPENAI_ENDPOINT_MODE = "openai_endpoint_mode"
     private const val KEY_TERMINAL_TOOLS = "terminal_tools"
     private const val KEY_THINKING_ENABLED = "thinking_enabled"
     private const val KEY_EXTRA_BODY_JSON = "extra_body_json"
+    private const val KEY_CUSTOM_HEADERS_JSON = "custom_headers_json"
+    private const val KEY_CUSTOM_BODY_JSON = "custom_body_json"
     private const val KEY_IMAGES = "images"
     private const val KEY_HISTORY = "history"
     private const val KEY_ROLE = "role"
@@ -109,16 +121,29 @@ internal object AgentRuntimeWire {
     fun serviceIntent(): Intent =
         Intent(ACTION_BIND).setComponent(ComponentName(MODULE_PACKAGE, SERVICE_CLASS))
 
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = false
+    }
+
     fun toBundle(request: RunRequest): Bundle = Bundle().apply {
         putString(KEY_RUN_ID, request.runId)
         putString(KEY_PROMPT, request.prompt)
+        putString(KEY_PROVIDER_ID, request.config.providerId)
+        putString(KEY_PROVIDER_NAME, request.config.providerName)
+        putString(KEY_PROVIDER_TYPE, request.config.providerType)
         putString(KEY_BASE_URL, request.config.baseUrl)
         putString(KEY_API_KEY, request.config.apiKey)
         putString(KEY_MODEL, request.config.model)
+        putString(KEY_MODEL_DISPLAY_NAME, request.config.modelDisplayName)
         putString(KEY_SYSTEM_PROMPT, request.config.systemPrompt)
+        putString(KEY_ANTHROPIC_VERSION, request.config.anthropicVersion)
+        putString(KEY_OPENAI_ENDPOINT_MODE, request.config.openAiEndpointMode)
         putBoolean(KEY_TERMINAL_TOOLS, request.config.terminalTools)
         putBoolean(KEY_THINKING_ENABLED, request.config.thinkingEnabled)
         putString(KEY_EXTRA_BODY_JSON, request.config.extraBodyJson)
+        putString(KEY_CUSTOM_HEADERS_JSON, json.encodeToString(request.config.customHeaders))
+        putString(KEY_CUSTOM_BODY_JSON, json.encodeToString(request.config.customBody))
         request.handoff?.let { putBundle(KEY_HANDOFF, toBundle(it)) }
         putParcelableArrayList(
             KEY_HISTORY,
@@ -149,13 +174,24 @@ internal object AgentRuntimeWire {
             runId = bundle.getString(KEY_RUN_ID).orEmpty(),
             prompt = bundle.getString(KEY_PROMPT).orEmpty(),
             config = AgentModelClient.ModelConfig(
+                providerId = bundle.getString(KEY_PROVIDER_ID).orEmpty(),
+                providerName = bundle.getString(KEY_PROVIDER_NAME).orEmpty(),
+                providerType = bundle.getString(KEY_PROVIDER_TYPE).orEmpty()
+                    .ifBlank { fuck.andes.data.model.ProviderTypes.OPENAI_COMPATIBLE },
                 baseUrl = bundle.getString(KEY_BASE_URL).orEmpty(),
                 apiKey = bundle.getString(KEY_API_KEY).orEmpty(),
                 model = bundle.getString(KEY_MODEL).orEmpty(),
+                modelDisplayName = bundle.getString(KEY_MODEL_DISPLAY_NAME).orEmpty(),
                 systemPrompt = bundle.getString(KEY_SYSTEM_PROMPT).orEmpty(),
+                anthropicVersion = bundle.getString(KEY_ANTHROPIC_VERSION).orEmpty()
+                    .ifBlank { fuck.andes.data.model.AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION },
+                openAiEndpointMode = bundle.getString(KEY_OPENAI_ENDPOINT_MODE).orEmpty()
+                    .ifBlank { fuck.andes.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS },
                 terminalTools = bundle.getBoolean(KEY_TERMINAL_TOOLS),
                 thinkingEnabled = bundle.getBoolean(KEY_THINKING_ENABLED),
-                extraBodyJson = bundle.getString(KEY_EXTRA_BODY_JSON).orEmpty()
+                extraBodyJson = bundle.getString(KEY_EXTRA_BODY_JSON).orEmpty(),
+                customHeaders = decodeCustomHeaders(bundle.getString(KEY_CUSTOM_HEADERS_JSON)),
+                customBody = decodeCustomBody(bundle.getString(KEY_CUSTOM_BODY_JSON))
             ),
             history = bundle.getParcelableArrayList(KEY_HISTORY, Bundle::class.java).orEmpty().map { message ->
                 AgentModelClient.ConversationMessage(
@@ -470,4 +506,12 @@ internal object AgentRuntimeWire {
             reasoningTokens = optionalInt("usage_reasoning"),
             cachedTokens = optionalInt("usage_cache"),
         )
+
+    private fun decodeCustomHeaders(raw: String?): List<CustomHeader> =
+        if (raw.isNullOrBlank()) emptyList()
+        else runCatching { json.decodeFromString<List<CustomHeader>>(raw) }.getOrDefault(emptyList())
+
+    private fun decodeCustomBody(raw: String?): List<CustomBody> =
+        if (raw.isNullOrBlank()) emptyList()
+        else runCatching { json.decodeFromString<List<CustomBody>>(raw) }.getOrDefault(emptyList())
 }
