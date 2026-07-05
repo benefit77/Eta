@@ -5,22 +5,50 @@ import fuck.andes.config.Prefs
 import fuck.andes.agent.runtime.AgentEvent
 import fuck.andes.agent.runtime.AgentRunController
 import fuck.andes.agent.runtime.AgentRunSteeredException
+import fuck.andes.data.model.AnthropicProviderSetting
+import fuck.andes.data.model.CustomBody
+import fuck.andes.data.model.CustomHeader
+import fuck.andes.data.model.OpenAiEndpointMode
+import fuck.andes.data.model.ProviderTypes
+import fuck.andes.data.provider.BuiltinProviders
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.json.JSONArray
 import org.json.JSONObject
 
 internal object AgentModelClient {
     private const val MAX_TRACE_CHARS = 240
 
-    fun loadConfig(): ModelConfig =
-        ModelConfig(
-            baseUrl = Prefs.getString(Prefs.Keys.AGENT_BASE_URL).trim(),
-            apiKey = Prefs.getString(Prefs.Keys.AGENT_API_KEY).trim(),
-            model = Prefs.getString(Prefs.Keys.AGENT_MODEL).trim(),
-            systemPrompt = Prefs.getString(Prefs.Keys.AGENT_SYSTEM_PROMPT).trim(),
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = false
+    }
+
+    fun loadConfig(): ModelConfig {
+        val runtimeJson = Prefs.getString(Prefs.Keys.AGENT_RUNTIME_CONFIG_JSON)
+        if (runtimeJson.isNotBlank()) {
+            runCatching {
+                json.decodeFromString<ModelConfig>(runtimeJson)
+            }.getOrNull()?.let { runtime ->
+                return runtime.copy(
+                    terminalTools = Prefs.isEnabled(Prefs.Keys.AGENT_TERMINAL_TOOLS),
+                    thinkingEnabled = Prefs.isEnabled(Prefs.Keys.AGENT_THINKING_ENABLED)
+                )
+            }
+        }
+        return ModelConfig(
+            providerId = "builtin-openai",
+            providerName = "OpenAI",
+            providerType = ProviderTypes.OPENAI_COMPATIBLE,
+            baseUrl = "https://api.openai.com/v1",
+            apiKey = "",
+            model = "gpt-5.5",
+            modelDisplayName = "GPT-5.5",
+            systemPrompt = BuiltinProviders.DEFAULT_SYSTEM_PROMPT,
             terminalTools = Prefs.isEnabled(Prefs.Keys.AGENT_TERMINAL_TOOLS),
-            thinkingEnabled = Prefs.isEnabled(Prefs.Keys.AGENT_THINKING_ENABLED),
-            extraBodyJson = Prefs.getString(Prefs.Keys.AGENT_EXTRA_BODY_JSON).trim()
+            thinkingEnabled = Prefs.isEnabled(Prefs.Keys.AGENT_THINKING_ENABLED)
         )
+    }
 
     fun complete(
         config: ModelConfig,
@@ -28,7 +56,7 @@ internal object AgentModelClient {
         toolExecutor: ToolExecutor,
         images: List<ModelImage> = emptyList(),
         history: List<ConversationMessage> = emptyList(),
-        provider: AgentProviderClient = OpenAiChatCompletionsProvider,
+        provider: AgentProviderClient = ProviderClientFactory.getClient(config),
         runController: AgentRunController = AgentRunController(),
         skillContext: SkillContext = SkillContext.EMPTY,
         onEvent: (AgentEvent) -> Unit = {}
@@ -1122,14 +1150,23 @@ internal object AgentModelClient {
             "chars=${result.content.length}, raw=${result.content.compactTrace()}"
         }
 
+    @Serializable
     data class ModelConfig(
+        val providerId: String = "",
+        val providerName: String = "",
+        val providerType: String = ProviderTypes.OPENAI_COMPATIBLE,
         val baseUrl: String,
         val apiKey: String,
         val model: String,
+        val modelDisplayName: String = "",
         val systemPrompt: String,
-        val terminalTools: Boolean,
+        val anthropicVersion: String = AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION,
+        val openAiEndpointMode: String = OpenAiEndpointMode.CHAT_COMPLETIONS,
+        val terminalTools: Boolean = false,
         val thinkingEnabled: Boolean = false,
-        val extraBodyJson: String = ""
+        val extraBodyJson: String = "",
+        val customHeaders: List<CustomHeader> = emptyList(),
+        val customBody: List<CustomBody> = emptyList()
     )
 
     data class ConversationMessage(

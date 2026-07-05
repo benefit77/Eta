@@ -2,18 +2,18 @@ package fuck.andes.agent.model
 
 import fuck.andes.agent.runtime.AgentRunController
 import fuck.andes.agent.runtime.AgentTokenUsage
+import fuck.andes.data.model.OpenAiEndpointMode
 import java.io.BufferedReader
-import java.io.InputStream
 import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
 internal object OpenAiChatCompletionsProvider : AgentProviderClient {
-    private const val CONNECT_TIMEOUT_MS = 15_000
-    private const val READ_TIMEOUT_MS = 60_000
     private const val MAX_ERROR_CHARS = 600
+    private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
     override val id: String = "openai_chat_completions"
 
@@ -34,41 +34,58 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         onEvent: (ProviderEvent) -> Unit
     ): ProviderResponse {
         val config = request.config
-        val connection = (URL(config.chatCompletionsUrl()).openConnection() as HttpURLConnection)
+        require(config.openAiEndpointMode == OpenAiEndpointMode.CHAT_COMPLETIONS) {
+            "Responses API 已预留配置位，但当前运行时仅支持 Chat Completions"
+        }
+        val url = ProviderUrls.openAiChatCompletionsUrl(config.baseUrl)
+        val headers = okhttp3.Headers.Builder()
+            .add("Content-Type", "application/json; charset=utf-8")
+            .add("Accept", "text/event-stream")
             .apply {
-                requestMethod = "POST"
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("Accept", "text/event-stream")
-                setRequestProperty("Authorization", "Bearer ${config.apiKey}")
+                if (config.apiKey.isNotBlank()) {
+                    add("Authorization", "Bearer ${config.apiKey}")
+                }
             }
+            .also { CustomHeaderFilter.mergeInto(it, config.customHeaders) }
+            .build()
 
-        val binding = runController.register { connection.disconnect() }
+        val requestBody = buildRequestJson(config, request.messages, request.tools)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+
+        val httpRequest = Request.Builder()
+            .url(url)
+            .headers(headers)
+            .post(requestBody)
+            .build()
+
+        val call = AgentHttpClient.client.newCall(httpRequest)
+        val binding = runController.register { call.cancel() }
+
         try {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
-            val requestBody = buildRequestJson(config, request.messages, request.tools).toString().toByteArray(Charsets.UTF_8)
-            connection.outputStream.use { it.write(requestBody) }
 
-            val code = connection.responseCode
-            onEvent(ProviderEvent.ResponseHeaders(code))
-            runController.throwIfCancelled()
-            if (code !in 200..299) {
-                val response = readResponse(connection.errorStream)
-                error("模型接口返回 HTTP $code：${response.compactError()}")
+            call.execute().use { response ->
+                val code = response.code
+                onEvent(ProviderEvent.ResponseHeaders(code))
+                runController.throwIfCancelled()
+
+                if (!response.isSuccessful) {
+                    val errorBody = response.body.string()
+                    error("模型接口返回 HTTP $code：${errorBody.compactError()}")
+                }
+
+                val assistantMessage = readStreamingAssistantMessage(response.body.byteStream(), runController, onEvent)
+                onEvent(ProviderEvent.Completed(assistantMessage.optString("finish_reason").ifBlank { null }))
+                return ProviderResponse(assistantMessage)
             }
-            val assistantMessage = readStreamingAssistantMessage(connection.inputStream, runController, onEvent)
-            onEvent(ProviderEvent.Completed(assistantMessage.optString("finish_reason").ifBlank { null }))
-            return ProviderResponse(assistantMessage)
         } catch (throwable: Throwable) {
             runCatching { runController.throwIfCancelled() }
                 .getOrElse { interruption -> throw interruption }
             throw throwable
         } finally {
             binding.close()
-            connection.disconnect()
         }
     }
 
@@ -89,11 +106,12 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                     request.put("enable_thinking", true)
                 }
                 mergeExtraBody(request, config.extraBodyJson)
+                RequestBodyMerge.mergeCustomBody(request, config.customBody)
             }
     }
 
     private fun readStreamingAssistantMessage(
-        stream: InputStream?,
+        stream: java.io.InputStream?,
         runController: AgentRunController,
         onEvent: (ProviderEvent) -> Unit
     ): JSONObject {
@@ -272,22 +290,6 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             reasoningTokens?.let { json.put("reasoning_tokens", it) }
             cachedTokens?.let { json.put("cached_tokens", it) }
         }
-
-    private fun readResponse(stream: InputStream?): String {
-        if (stream == null) return ""
-        return BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
-            reader.readText()
-        }
-    }
-
-    private fun AgentModelClient.ModelConfig.chatCompletionsUrl(): String {
-        val normalized = baseUrl.trimEnd('/')
-        return if (normalized.endsWith("/chat/completions")) {
-            normalized
-        } else {
-            "$normalized/chat/completions"
-        }
-    }
 
     private fun String.compactError(): String =
         replace('\n', ' ')
