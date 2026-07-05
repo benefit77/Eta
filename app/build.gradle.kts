@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
 }
 
 java {
@@ -82,11 +83,15 @@ dependencies {
     // DataStore：Provider / Model 结构化 JSON 与当前选中 ID 等键值
     implementation(libs.datastore.preferences)
 
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+
     // OkHttp：替代 HttpURLConnection，支持 SSE
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
 
-    // Kotlinx Serialization：Room TypeConverter 与配置序列化
+    // Kotlinx Serialization：Provider 设置与运行时配置 JSON
     implementation(libs.kotlinx.serialization.json)
 
     // Coroutines：显式引入，避免依赖传递版本不确定
@@ -94,5 +99,6 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.json)
+    testImplementation(libs.room.testing)
     testImplementation(libs.robolectric)
 }

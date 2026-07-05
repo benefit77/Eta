@@ -1,8 +1,7 @@
 [versions]
 agp = "9.2.1"
 kotlin = "2.4.0"
-# AGP 9 内置 Kotlin 不支持 KAPT/KSP，Room 无法在当前 Kotlin 2.4.0 环境下使用。
-# Provider/Model 结构化数据改用 DataStore + kotlinx.serialization JSON 存储。
+ksp = "2.3.9"
 libxposedApi = "102.0.0"
 libxposedService = "102.0.0"
 miuix = "0.9.3"
@@ -15,6 +14,7 @@ okhttp = "5.4.0"
 kotlinx-serialization = "1.11.0"
 kotlinx-coroutines = "1.11.0"
 material3 = "1.4.0"
+room = "2.8.4"
 junit = "4.13.2"
 json = "20260522"
 robolectric = "4.16.1"
@@ -32,6 +32,10 @@ markdown-renderer = { group = "com.mikepenz", name = "multiplatform-markdown-ren
 markdown-renderer-m3 = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-m3-android", version.ref = "markdownRenderer" }
 material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-sse = { group = "com.squareup.okhttp3", name = "okhttp-sse", version.ref = "okhttp" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinx-coroutines" }
@@ -45,3 +49,4 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
