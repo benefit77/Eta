@@ -3,6 +3,7 @@ package fuck.andes
 import android.app.Application
 import android.os.Handler
 import android.os.Looper
+import fuck.andes.data.datastore.SettingsDataStore
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import java.util.concurrent.CopyOnWriteArraySet
@@ -23,6 +24,7 @@ class FuckAndesApp : Application(), XposedServiceHelper.OnServiceListener {
 
     override fun onCreate() {
         super.onCreate()
+        SettingsDataStore.init(this)
         XposedServiceHelper.registerListener(this)
     }
 

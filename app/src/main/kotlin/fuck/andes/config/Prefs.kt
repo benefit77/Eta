@@ -40,6 +40,11 @@ internal object Prefs {
         const val AGENT_THINKING_ENABLED = "agent_thinking_enabled"
         const val AGENT_EXTRA_BODY_JSON = "agent_extra_body_json"
 
+        // Provider / Model 运行时镜像 key（供 Hook 进程读取）
+        const val AGENT_SELECTED_PROVIDER_ID = "agent_selected_provider_id"
+        const val AGENT_SELECTED_MODEL_ID = "agent_selected_model_id"
+        const val AGENT_RUNTIME_CONFIG_JSON = "agent_runtime_config_json"
+
         /** 全部布尔开关及其默认值。 */
         val BOOLEAN_DEFAULTS: Map<String, Boolean> = mapOf(
             POWER_KEY_TAKEOVER to true,
@@ -59,7 +64,7 @@ internal object Prefs {
         val STRING_DEFAULTS: Map<String, String> = mapOf(
             AGENT_BASE_URL to "https://api.openai.com/v1",
             AGENT_API_KEY to "",
-            AGENT_MODEL to "gpt-4.1-mini",
+            AGENT_MODEL to "gpt-5.5",
             AGENT_SYSTEM_PROMPT to "你是运行在 Android 设备上的手机 Agent。回答要简洁、直接，并保留必要的操作上下文。",
             AGENT_EXTRA_BODY_JSON to ""
         )
