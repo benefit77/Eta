@@ -67,6 +67,27 @@ class AgentConversationStoreTest {
                     ),
                 ),
             ),
+            history = listOf(
+                fuck.andes.agent.model.AgentModelClient.ConversationMessage(
+                    role = "user",
+                    content = "看一下当前屏幕",
+                ),
+                fuck.andes.agent.model.AgentModelClient.ConversationMessage(
+                    role = "assistant",
+                    content = "",
+                    reasoningContent = "需要先观察屏幕",
+                    toolCallsJson = """[{"id":"toolu_1","type":"function","function":{"name":"observe_screen","arguments":"{}"}}]""",
+                ),
+                fuck.andes.agent.model.AgentModelClient.ConversationMessage(
+                    role = "tool",
+                    content = "{\"ok\":true}",
+                    toolCallId = "toolu_1",
+                ),
+                fuck.andes.agent.model.AgentModelClient.ConversationMessage(
+                    role = "assistant",
+                    content = "| 项目 | 内容 |\n| --- | --- |\n| 电量 | 88% |",
+                ),
+            ),
             input = "不应该保存草稿",
             isStreaming = true,
             thinkingEnabled = true,
@@ -92,6 +113,7 @@ class AgentConversationStoreTest {
         assertFalse(restored.isStreaming)
         assertTrue(restored.thinkingEnabled)
         assertEquals(conversation.messages, restored.messages)
+        assertEquals(conversation.history, restored.history)
     }
 
     @Test

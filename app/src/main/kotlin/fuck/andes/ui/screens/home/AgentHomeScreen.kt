@@ -13,7 +13,7 @@ import fuck.andes.ui.model.AgentHomeAction
  * 本 Screen 只负责消息流、Run trace、工具摘要和底部输入框。
  */
 @Composable
-fun AgentHomeScreen(
+internal fun AgentHomeScreen(
     state: AgentChatHomeUiState,
     onAction: (AgentHomeAction) -> Unit,
     isDrawerOpen: Boolean = false,

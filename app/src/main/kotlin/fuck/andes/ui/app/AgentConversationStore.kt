@@ -1,6 +1,7 @@
 package fuck.andes.ui.app
 
 import android.content.Context
+import fuck.andes.agent.model.AgentModelClient
 import fuck.andes.data.db.ConversationEntity
 import fuck.andes.data.db.ConversationMessageEntity
 import fuck.andes.data.db.ConversationStateEntity
@@ -20,9 +21,16 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.json.JSONArray
 
 internal object AgentConversationStore {
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+
     data class Snapshot(
         val selectedConversationId: String,
         val conversationsById: Map<String, AgentChatHomeUiState>,
@@ -59,6 +67,7 @@ internal object AgentConversationStore {
                         id = id,
                         title = titles[id] ?: "新对话",
                         thinkingEnabled = state.thinkingEnabled,
+                        historyJson = json.encodeToString(state.history),
                         createdAt = updatedAt[id] ?: now,
                         updatedAt = updatedAt[id] ?: now,
                     )
@@ -99,6 +108,13 @@ internal object AgentConversationStore {
                     .orEmpty()
                     .sortedBy { it.sortIndex }
                     .mapNotNull { it.toMessageOrNull() },
+                history = decodeHistory(conversation.historyJson)
+                    .ifEmpty {
+                        messagesByConversation[conversation.id]
+                            .orEmpty()
+                            .sortedBy { it.sortIndex }
+                            .toLegacyHistory()
+                    },
                 input = "",
                 isStreaming = false,
                 thinkingEnabled = conversation.thinkingEnabled,
@@ -253,6 +269,30 @@ internal object AgentConversationStore {
                 }
             }
         }.getOrDefault(emptyList())
+
+    private fun decodeHistory(raw: String): List<AgentModelClient.ConversationMessage> =
+        runCatching {
+            json.decodeFromString<List<AgentModelClient.ConversationMessage>>(raw)
+        }.getOrDefault(emptyList())
+
+    private fun List<ConversationMessageEntity>.toLegacyHistory(): List<AgentModelClient.ConversationMessage> =
+        mapNotNull { message ->
+            when (message.type) {
+                TYPE_USER -> AgentModelClient.ConversationMessage(
+                    role = "user",
+                    content = message.content,
+                )
+                TYPE_ASSISTANT -> message.content
+                    .takeIf { it.isNotBlank() }
+                    ?.let { content ->
+                        AgentModelClient.ConversationMessage(
+                            role = "assistant",
+                            content = content,
+                        )
+                    }
+                else -> null
+            }
+        }
 
     private fun fallbackSnapshot(defaultThinkingEnabled: Boolean): Snapshot {
         val id = newConversationId()

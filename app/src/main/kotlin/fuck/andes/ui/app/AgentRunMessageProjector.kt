@@ -13,6 +13,38 @@ internal class AgentRunMessageProjector(
 ) {
     private val thinkingStartedAt = mutableMapOf<String, Long>()
 
+    fun appendTextDelta(
+        runId: String,
+        round: Int,
+        delta: String,
+        messages: List<AgentChatMessageUi>,
+    ): List<AgentChatMessageUi> {
+        if (delta.isEmpty()) return messages
+
+        val assistantId = assistantMessageId(runId, round)
+        var updated = false
+        val next = messages.map { message ->
+            if (message is AgentMessageUi && message.id == assistantId) {
+                updated = true
+                message.copy(
+                    content = message.content + delta,
+                    isStreaming = true,
+                    renderMarkdown = false,
+                )
+            } else {
+                message
+            }
+        }
+        if (updated) return next
+
+        return next + AgentMessageUi(
+            id = assistantId,
+            content = delta,
+            isStreaming = true,
+            renderMarkdown = false,
+        )
+    }
+
     fun appendReasoningDelta(
         runId: String,
         round: Int,
@@ -41,6 +73,7 @@ internal class AgentRunMessageProjector(
 
         return next.insertBeforeAssistant(
             runId = runId,
+            round = round,
             message = ThinkingMessageUi(
                 id = thinkingId,
                 content = delta,
@@ -64,6 +97,7 @@ internal class AgentRunMessageProjector(
 
         return messages.insertBeforeAssistant(
             runId = runId,
+            round = round,
             message = ThinkingMessageUi(
                 id = thinkingId,
                 content = content,
@@ -98,6 +132,33 @@ internal class AgentRunMessageProjector(
         }
     }
 
+    fun finalizeText(
+        runId: String,
+        messages: List<AgentChatMessageUi>,
+    ): List<AgentChatMessageUi> =
+        messages.map { message ->
+            if (message is AgentMessageUi && message.id.startsWith(assistantMessagePrefix(runId))) {
+                message.copy(isStreaming = false)
+            } else {
+                message
+            }
+        }
+
+    fun finalizeTextRound(
+        runId: String,
+        round: Int,
+        messages: List<AgentChatMessageUi>,
+    ): List<AgentChatMessageUi> {
+        val assistantId = assistantMessageId(runId, round)
+        return messages.map { message ->
+            if (message is AgentMessageUi && message.id == assistantId) {
+                message.copy(isStreaming = false)
+            } else {
+                message
+            }
+        }
+    }
+
     fun startTool(
         runId: String,
         event: AgentEvent.ToolStarted,
@@ -105,6 +166,7 @@ internal class AgentRunMessageProjector(
     ): List<AgentChatMessageUi> =
         messages.insertBeforeAssistantOnce(
             runId = runId,
+            round = event.round,
             message = ToolActivityMessageUi(
                 id = toolActivityMessageId(runId, event.round, event.toolCallId),
                 toolName = event.name,
@@ -175,23 +237,33 @@ internal class AgentRunMessageProjector(
 
     private fun List<AgentChatMessageUi>.insertBeforeAssistantOnce(
         runId: String,
+        round: Int,
         message: AgentChatMessageUi,
     ): List<AgentChatMessageUi> {
         if (any { it.id == message.id }) return this
-        return insertBeforeAssistant(runId, message)
+        return insertBeforeAssistant(runId, round, message)
     }
 
     private fun List<AgentChatMessageUi>.insertBeforeAssistant(
         runId: String,
+        round: Int,
         message: AgentChatMessageUi,
     ): List<AgentChatMessageUi> {
-        val assistantIndex = indexOfFirst { it is AgentMessageUi && it.id == "assistant-$runId" }
+        val assistantIndex = indexOfFirst {
+            it is AgentMessageUi && it.id == assistantMessageId(runId, round)
+        }
         return if (assistantIndex >= 0) {
             toMutableList().apply { add(assistantIndex, message) }
         } else {
             this + message
         }
     }
+
+    private fun assistantMessageId(runId: String, round: Int): String =
+        "${assistantMessagePrefix(runId)}$round"
+
+    private fun assistantMessagePrefix(runId: String): String =
+        "assistant-$runId-"
 
     private fun thinkingMessageId(runId: String, round: Int): String =
         "$runId-thinking-$round"

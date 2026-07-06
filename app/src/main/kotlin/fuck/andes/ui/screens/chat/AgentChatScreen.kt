@@ -11,7 +11,7 @@ import fuck.andes.ui.model.AgentChatUiState
  * 区别仅在于顶部返回由 Shell 统一提供。
  */
 @Composable
-fun AgentChatScreen(
+internal fun AgentChatScreen(
     state: AgentChatUiState,
     onAction: (AgentChatAction) -> Unit,
     modifier: Modifier = Modifier,

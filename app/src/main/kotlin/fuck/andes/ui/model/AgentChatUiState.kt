@@ -1,10 +1,12 @@
 package fuck.andes.ui.model
 
 import androidx.compose.runtime.Immutable
+import fuck.andes.agent.model.AgentModelClient
 
 @Immutable
-data class AgentChatUiState(
+internal data class AgentChatUiState(
     val messages: List<AgentChatMessageUi>,
+    val history: List<AgentModelClient.ConversationMessage> = emptyList(),
     val input: String,
     val isStreaming: Boolean,
     val thinkingEnabled: Boolean,

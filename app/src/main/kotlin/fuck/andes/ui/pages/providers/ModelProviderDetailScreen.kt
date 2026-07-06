@@ -57,7 +57,6 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -497,7 +496,6 @@ private fun ProviderModelsTab(
                                         id = ModelRepository.newId(),
                                         modelId = "",
                                         displayName = "自定义模型",
-                                        supportsTools = true,
                                     )
                                     ModelRepository.addModel(provider.id, newModel)
                                     RuntimeConfigRepository.syncToRemotePreferences(FuckAndesApp.serviceInstance)
@@ -651,16 +649,10 @@ private fun ModelEditDialog(
 ) {
     var displayName by remember { mutableStateOf(model.displayName) }
     var modelId by remember { mutableStateOf(model.modelId) }
-    var supportsVision by remember { mutableStateOf(model.supportsVision) }
-    var supportsTools by remember { mutableStateOf(model.supportsTools) }
-    var supportsReasoning by remember { mutableStateOf(model.supportsReasoning) }
 
     fun updated(): Model = model.copy(
         displayName = displayName.trim(),
         modelId = modelId.trim(),
-        supportsVision = supportsVision,
-        supportsTools = supportsTools,
-        supportsReasoning = supportsReasoning,
     )
 
     OverlayDialog(show = true, title = "编辑模型", onDismissRequest = onDismiss) {
@@ -681,9 +673,11 @@ private fun ModelEditDialog(
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(modifier = Modifier.height(12.dp))
-            CapabilitySwitch("支持视觉能力 (Vision)", supportsVision) { supportsVision = it }
-            CapabilitySwitch("支持工具调用 (Tools)", supportsTools) { supportsTools = it }
-            CapabilitySwitch("支持深度思考 (Reasoning)", supportsReasoning) { supportsReasoning = it }
+            Text(
+                text = "能力标签来自远端 /models 或官方 catalog：${buildCapabilityLabel(model)}",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
         }
         Row(modifier = Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.End) {
             TextButton(text = "取消", onClick = onDismiss)
@@ -715,18 +709,6 @@ private fun ModelEditDialog(
                 },
             )
         }
-    }
-}
-
-@Composable
-private fun CapabilitySwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
@@ -774,7 +756,15 @@ private fun buildCapabilityLabel(model: Model): String {
         if (model.supportsVision) add("Vision")
         if (model.supportsTools) add("Tools")
         if (model.supportsReasoning) add("Reasoning")
-        model.contextWindow?.let { add("${it / 1000}K context") }
+        model.contextWindow?.let { contextWindow ->
+            add(
+                if (contextWindow >= 1_000_000) {
+                    "1M context"
+                } else {
+                    "${contextWindow / 1000}K context"
+                }
+            )
+        }
     }
     return parts.joinToString(" · ").ifBlank { "基础文本" }
 }

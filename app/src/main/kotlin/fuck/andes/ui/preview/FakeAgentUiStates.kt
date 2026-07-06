@@ -23,7 +23,7 @@ import fuck.andes.ui.model.ToolItemUi
 import fuck.andes.ui.model.UserMessageUi
 import fuck.andes.ui.model.AgentMessageUi
 
-object FakeAgentUiStates {
+internal object FakeAgentUiStates {
 
     val conversations = ConversationPaneUiState(
         selectedConversationId = "c-001",

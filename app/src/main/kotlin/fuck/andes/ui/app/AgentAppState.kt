@@ -319,17 +319,22 @@ internal class AgentAppState(
         }
 
         val conversationId = selectedConversationId
-        val history = buildConversationHistory(homeState.messages)
+        val history = homeState.history
         val thinkingEnabled = homeState.thinkingEnabled
         val pendingImages = homeState.pendingImages
         val runId = "run-${UUID.randomUUID()}"
         val imageDataUrls = pendingImages.map { it.dataUrl }
         val userMessage = UserMessageUi(id = "user-$runId", content = prompt, images = imageDataUrls)
-        val assistantMessage = AgentMessageUi(
-            id = "assistant-$runId",
-            content = "",
-            isStreaming = true,
-            renderMarkdown = false,
+        val userHistoryMessage = AgentModelClient.buildUserHistoryMessage(
+            text = prompt,
+            images = pendingImages.map { image ->
+                AgentModelClient.ModelImage(
+                    dataUrl = image.dataUrl,
+                    mimeType = image.mimeType,
+                    bytes = image.dataUrl.length,
+                    source = image.uri,
+                )
+            },
         )
 
         val title = conversationTitles[selectedConversationId]
@@ -346,7 +351,8 @@ internal class AgentAppState(
                 input = "",
                 isStreaming = true,
                 pendingImages = emptyList(),
-                messages = homeState.messages + userMessage + assistantMessage,
+                history = homeState.history + userHistoryMessage,
+                messages = homeState.messages + userMessage,
             )
         )
         refreshConversationSummaries()
@@ -428,15 +434,11 @@ internal class AgentAppState(
             AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId)
         }
         updateRunTrace(runId) { messages ->
-            val finalized = runMessageProjector.finalizeThinking(runId, messages)
-            runMessageProjector.failRunningTools("已停止", finalized)
+            val finalizedThinking = runMessageProjector.finalizeThinking(runId, messages)
+            val finalizedText = runMessageProjector.finalizeText(runId, finalizedThinking)
+            runMessageProjector.failRunningTools("已停止", finalizedText)
         }
-        replaceAssistantMessage(
-            runId = runId,
-            content = currentAssistantContent(runId).ifBlank { "已停止" },
-            isStreaming = false,
-            renderMarkdown = false,
-        )
+        replaceLatestAssistantMessage(runId, content = "已停止", isStreaming = false, renderMarkdown = false)
         setConversationStreaming(runId, false)
         runMessageProjector.clearRun(runId)
         runConversationIds.remove(runId)
@@ -502,18 +504,44 @@ internal class AgentAppState(
 
     private fun applyRunEvent(runId: String, event: AgentEvent) {
         when (event) {
-            is AgentEvent.AssistantTextDelta -> {
-                appendAssistantDelta(runId, event.delta)
+            is AgentEvent.AssistantBlockStart -> {
+                if (event.kind == AgentEvent.AssistantBlockKind.TOOL_CALL) {
+                    updateRunTrace(runId) { messages ->
+                        runMessageProjector.finalizeTextRound(runId, event.round, messages)
+                    }
+                }
             }
 
-            is AgentEvent.AssistantReasoningDelta -> {
+            is AgentEvent.AssistantBlockDelta -> {
                 updateRunTrace(runId) { messages ->
-                    runMessageProjector.appendReasoningDelta(runId, event.round, event.delta, messages)
+                    when (event.kind) {
+                        AgentEvent.AssistantBlockKind.TEXT ->
+                            runMessageProjector.appendTextDelta(runId, event.round, event.delta, messages)
+
+                        AgentEvent.AssistantBlockKind.THINKING ->
+                            runMessageProjector.appendReasoningDelta(runId, event.round, event.delta, messages)
+
+                        AgentEvent.AssistantBlockKind.TOOL_CALL -> messages
+                    }
+                }
+            }
+
+            is AgentEvent.AssistantBlockEnd -> {
+                updateRunTrace(runId) { messages ->
+                    when (event.kind) {
+                        AgentEvent.AssistantBlockKind.TEXT ->
+                            runMessageProjector.finalizeTextRound(runId, event.round, messages)
+
+                        AgentEvent.AssistantBlockKind.THINKING ->
+                            runMessageProjector.finalizeThinkingRound(runId, event.round, messages)
+
+                        AgentEvent.AssistantBlockKind.TOOL_CALL -> messages
+                    }
                 }
             }
 
             is AgentEvent.UsageReceived -> {
-                updateAssistantUsage(runId, event.usage.toUi())
+                updateAssistantUsage(runId, event.round, event.usage.toUi())
             }
 
             is AgentEvent.UserSupplementReceived -> {
@@ -522,8 +550,9 @@ internal class AgentAppState(
 
             is AgentEvent.ToolStarted -> {
                 updateRunTrace(runId) { messages ->
-                    val finalized = runMessageProjector.finalizeThinkingRound(runId, event.round, messages)
-                    runMessageProjector.startTool(runId, event, finalized)
+                    val finalizedThinking = runMessageProjector.finalizeThinking(runId, messages)
+                    val finalizedText = runMessageProjector.finalizeTextRound(runId, event.round, finalizedThinking)
+                    runMessageProjector.startTool(runId, event, finalizedText)
                 }
             }
 
@@ -535,8 +564,9 @@ internal class AgentAppState(
 
             is AgentEvent.RunFailed -> {
                 updateRunTrace(runId) { messages ->
-                    val finalized = runMessageProjector.finalizeThinking(runId, messages)
-                    runMessageProjector.failRunningTools(event.reason, finalized)
+                    val finalizedThinking = runMessageProjector.finalizeThinking(runId, messages)
+                    val finalizedText = runMessageProjector.finalizeText(runId, finalizedThinking)
+                    runMessageProjector.failRunningTools(event.reason, finalizedText)
                 }
             }
 
@@ -555,7 +585,8 @@ internal class AgentAppState(
 
             is AgentEvent.RunFinished -> {
                 updateRunTrace(runId) { messages ->
-                    runMessageProjector.finalizeThinking(runId, messages)
+                    val finalizedThinking = runMessageProjector.finalizeThinking(runId, messages)
+                    runMessageProjector.finalizeText(runId, finalizedThinking)
                 }
             }
 
@@ -564,7 +595,7 @@ internal class AgentAppState(
             is AgentEvent.ProviderResponseStarted,
             is AgentEvent.ToolImagesAttached,
             is AgentEvent.RoundStarted,
-            is AgentEvent.ProviderToolCallDelta -> Unit
+            -> Unit
         }
     }
 
@@ -579,28 +610,13 @@ internal class AgentAppState(
             result.error ?: "Agent Runtime 调用失败"
         }
 
-        replaceAssistantMessage(
-            runId = runId,
-            content = content,
-            isStreaming = false,
-            renderMarkdown = result.ok,
-        )
+        appendConversationHistory(runId, result.transcript)
+        replaceLatestAssistantMessage(runId, content, isStreaming = false, renderMarkdown = result.ok)
         setConversationStreaming(runId, false)
         runMessageProjector.clearRun(runId)
         runConversationIds.remove(runId)
         refreshConversationSummaries()
         persistConversations()
-    }
-
-    private fun appendAssistantDelta(runId: String, delta: String) {
-        if (delta.isEmpty()) return
-        replaceAssistantMessage(
-            runId = runId,
-            content = currentAssistantContent(runId) + delta,
-            isStreaming = true,
-            renderMarkdown = false,
-        )
-        refreshConversationSummaries()
     }
 
     private fun updateRunTrace(
@@ -611,11 +627,12 @@ internal class AgentAppState(
         refreshConversationSummaries()
     }
 
-    private fun updateAssistantUsage(runId: String, usage: TokenUsageUi) {
+    private fun updateAssistantUsage(runId: String, round: Int, usage: TokenUsageUi) {
         if (usage.isEmpty) return
         replaceAssistantMessage(
             runId = runId,
-            content = currentAssistantContent(runId),
+            round = round,
+            content = currentAssistantContent(runId, round),
             isStreaming = true,
             usage = usage,
         )
@@ -658,7 +675,9 @@ internal class AgentAppState(
             if (updated.any { it.id == id }) return@forEach
             val userMessage = UserMessageUi(id = id, content = supplement.text)
             val assistantIndex = updated.indexOfLast {
-                it is AgentMessageUi && it.id == "assistant-$runId"
+                it is AgentMessageUi &&
+                    it.id.startsWith(assistantMessagePrefix(runId)) &&
+                    it.isStreaming
             }
             updated = if (assistantIndex >= 0) {
                 updated.toMutableList().also { it.add(assistantIndex, userMessage) }
@@ -672,23 +691,27 @@ internal class AgentAppState(
     private fun supplementMessageId(runId: String, index: Int): String =
         "user-$runId-supplement-$index"
 
-    private fun currentAssistantContent(runId: String): String =
+    private fun currentAssistantContent(runId: String, round: Int): String =
         conversationStateForRun(runId).messages
             .filterIsInstance<AgentMessageUi>()
-            .firstOrNull { it.id == "assistant-$runId" }
+            .firstOrNull { it.id == assistantMessageId(runId, round) }
             ?.content
             .orEmpty()
 
     private fun replaceAssistantMessage(
         runId: String,
+        round: Int,
         content: String,
         isStreaming: Boolean,
         renderMarkdown: Boolean? = null,
         usage: TokenUsageUi? = null,
     ) {
         updateMessages(runId) { messages ->
-            messages.map { message ->
-                if (message is AgentMessageUi && message.id == "assistant-$runId") {
+            val assistantId = assistantMessageId(runId, round)
+            var replaced = false
+            val updated = messages.map { message ->
+                if (message is AgentMessageUi && message.id == assistantId) {
+                    replaced = true
                     message.copy(
                         content = content,
                         isStreaming = isStreaming,
@@ -699,8 +722,53 @@ internal class AgentAppState(
                     message
                 }
             }
+            if (replaced) {
+                updated
+            } else {
+                updated + AgentMessageUi(
+                    id = assistantId,
+                    content = content,
+                    isStreaming = isStreaming,
+                    renderMarkdown = renderMarkdown ?: false,
+                    usage = usage,
+                )
+            }
         }
     }
+
+    private fun replaceLatestAssistantMessage(
+        runId: String,
+        content: String,
+        isStreaming: Boolean,
+        renderMarkdown: Boolean? = null,
+        usage: TokenUsageUi? = null,
+    ) {
+        replaceAssistantMessage(
+            runId = runId,
+            round = latestAssistantRound(runId) ?: 1,
+            content = content,
+            isStreaming = isStreaming,
+            renderMarkdown = renderMarkdown,
+            usage = usage,
+        )
+    }
+
+    private fun latestAssistantRound(runId: String): Int? =
+        conversationStateForRun(runId).messages
+            .filterIsInstance<AgentMessageUi>()
+            .mapNotNull { assistantRound(runId, it.id) }
+            .maxOrNull()
+
+    private fun assistantMessageId(runId: String, round: Int): String =
+        "${assistantMessagePrefix(runId)}$round"
+
+    private fun assistantMessagePrefix(runId: String): String =
+        "assistant-$runId-"
+
+    private fun assistantRound(runId: String, messageId: String): Int? =
+        messageId.removePrefix(assistantMessagePrefix(runId))
+            .takeIf { it != messageId }
+            ?.toIntOrNull()
 
     private fun updateMessages(
         runId: String,
@@ -709,6 +777,16 @@ internal class AgentAppState(
         val conversationId = conversationIdForRun(runId)
         val state = conversationsById[conversationId] ?: return
         updateConversation(conversationId, state.copy(messages = transform(state.messages)))
+    }
+
+    private fun appendConversationHistory(
+        runId: String,
+        additions: List<AgentModelClient.ConversationMessage>,
+    ) {
+        if (additions.isEmpty()) return
+        val conversationId = conversationIdForRun(runId)
+        val state = conversationsById[conversationId] ?: return
+        updateConversation(conversationId, state.copy(history = state.history + additions))
     }
 
     private fun updateCurrentConversation(state: AgentChatHomeUiState) {
@@ -808,54 +886,15 @@ internal class AgentAppState(
         }
     }
 
-    private fun buildConversationHistory(messages: List<AgentChatMessageUi>): List<AgentModelClient.ConversationMessage> {
-        val candidates = messages.mapNotNull { message ->
-            when (message) {
-                is UserMessageUi -> AgentModelClient.ConversationMessage(
-                    role = "user",
-                    content = message.content,
-                )
-
-                is AgentMessageUi -> message.content
-                    .takeIf { it.isNotBlank() && !message.isStreaming }
-                    ?.let { content ->
-                        AgentModelClient.ConversationMessage(
-                            role = "assistant",
-                            content = content,
-                        )
-                    }
-
-                else -> null
-            }
-        }.takeLast(MAX_CONTEXT_MESSAGES)
-
-        val reversed = candidates.asReversed()
-        var remainingChars = MAX_CONTEXT_CHARS
-        val selected = mutableListOf<AgentModelClient.ConversationMessage>()
-        reversed.forEach { message ->
-            val content = message.content.trim()
-            if (content.isBlank() || remainingChars <= 0) return@forEach
-            val clipped = if (content.length > remainingChars) {
-                content.takeLast(remainingChars)
-            } else {
-                content
-            }
-            selected += message.copy(content = clipped)
-            remainingChars -= clipped.length
-        }
-        return selected.asReversed()
-    }
-
     private companion object {
         const val HANDOFF_SOURCE = "agent_ui"
         const val MAX_TITLE_CHARS = 24
         const val MAX_PREVIEW_CHARS = 48
-        const val MAX_CONTEXT_MESSAGES = 12
-        const val MAX_CONTEXT_CHARS = 24_000
 
         fun emptyChatState(thinkingEnabled: Boolean): AgentChatHomeUiState =
             AgentChatHomeUiState(
                 messages = emptyList(),
+                history = emptyList(),
                 input = "",
                 isStreaming = false,
                 thinkingEnabled = thinkingEnabled,
