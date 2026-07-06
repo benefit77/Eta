@@ -172,22 +172,17 @@ internal object AgentRunArchiveStore {
         events.forEach { event ->
             val previous = compacted.lastOrNull()
             val merged = when {
-                previous is AgentEvent.AssistantTextDelta &&
-                    event is AgentEvent.AssistantTextDelta &&
+                previous is AgentEvent.AssistantBlockDelta &&
+                    event is AgentEvent.AssistantBlockDelta &&
                     previous.round == event.round -> {
-                    previous.copy(
-                        delta = previous.delta + event.delta,
-                        deltaChars = previous.deltaChars + event.deltaChars,
-                    )
-                }
-
-                previous is AgentEvent.AssistantReasoningDelta &&
-                    event is AgentEvent.AssistantReasoningDelta &&
-                    previous.round == event.round -> {
-                    previous.copy(
-                        delta = previous.delta + event.delta,
-                        deltaChars = previous.deltaChars + event.deltaChars,
-                    )
+                    if (previous.kind == event.kind && previous.index == event.index) {
+                        previous.copy(
+                            delta = previous.delta + event.delta,
+                            deltaChars = previous.deltaChars + event.deltaChars,
+                        )
+                    } else {
+                        null
+                    }
                 }
 
                 else -> null
