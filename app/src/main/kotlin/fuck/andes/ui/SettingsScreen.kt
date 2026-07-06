@@ -147,8 +147,8 @@ internal fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = "FuckAndes",
-                largeTitle = "FuckAndes",
+                title = "设置",
+                largeTitle = "设置",
                 navigationIcon = { MiuixBackButton(onClick = onBack) },
                 scrollBehavior = scrollBehavior,
             )
@@ -169,9 +169,69 @@ internal fun SettingsScreen(
                 }
             }
 
-            // ── 交互接管 ────────────────────────────────────────────────
-            item(key = "section_interaction") {
-                SmallTitle("交互接管")
+            // ── Agent ──────────────────────────────────────────────────
+            item(key = "section_agent") {
+                SmallTitle("Agent")
+                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    SwitchPref(
+                        context = context,
+                        prefs = prefs,
+                        title = "默认启用深度思考",
+                        key = Prefs.Keys.AGENT_THINKING_ENABLED,
+                        icon = LucideR.drawable.lucide_ic_brain,
+                        iconTint = ColorOSRoyalBlue,
+                    )
+                    PrefDivider()
+                    SwitchPref(
+                        context = context,
+                        prefs = prefs,
+                        title = "启用终端/文件工具",
+                        key = Prefs.Keys.AGENT_TERMINAL_TOOLS,
+                        icon = LucideR.drawable.lucide_ic_square_terminal,
+                        iconTint = ColorOSAmberYellow,
+                    )
+                    PrefDivider()
+                    ArrowPreference(
+                        title = "模型提供商",
+                        summary = providerSummary,
+                        startAction = {
+                            TintedIcon(
+                                icon = LucideR.drawable.lucide_ic_cpu,
+                                tint = ColorOSPurple,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.ModelProviders) },
+                    )
+                }
+            }
+
+            // ── 小布接管 ──────────────────────────────────────────────────
+            item(key = "section_breeno_takeover") {
+                SmallTitle("小布接管")
+                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    SwitchPref(
+                        context = context,
+                        prefs = prefs,
+                        title = "启用小布自定义模型",
+                        key = Prefs.Keys.AGENT_CUSTOM_MODEL,
+                        icon = LucideR.drawable.lucide_ic_cpu,
+                        iconTint = ColorOSOrangeRed,
+                    )
+                    PrefDivider()
+                    SwitchPref(
+                        context = context,
+                        prefs = prefs,
+                        title = "仅 /agent 前缀接管",
+                        key = Prefs.Keys.AGENT_REQUIRE_PREFIX,
+                        icon = LucideR.drawable.lucide_ic_message_square,
+                        iconTint = ColorOSAmberYellow,
+                    )
+                }
+            }
+
+            // ── Gemini ─────────────────────────────────────────────────
+            item(key = "section_gemini") {
+                SmallTitle("Gemini")
                 Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     SwitchPref(
                         context = context,
@@ -182,30 +242,6 @@ internal fun SettingsScreen(
                         iconTint = ColorOSOrangeRed,
                     )
                     PrefDivider()
-                    SwitchPref(
-                        context = context,
-                        prefs = prefs,
-                        title = "手势条长按触发一圈即搜",
-                        key = Prefs.Keys.GESTURE_BAR_CIRCLE_TO_SEARCH,
-                        icon = LucideR.drawable.lucide_ic_search,
-                        iconTint = ColorOSRoyalBlue,
-                    )
-                    PrefDivider()
-                    SwitchPref(
-                        context = context,
-                        prefs = prefs,
-                        title = "双指长按触发一圈即搜",
-                        key = Prefs.Keys.DOUBLE_FINGER_CIRCLE_TO_SEARCH,
-                        icon = LucideR.drawable.lucide_ic_mouse_pointer_click,
-                        iconTint = ColorOSLightBlue,
-                    )
-                }
-            }
-
-            // ── 助理配置 ────────────────────────────────────────────────
-            item(key = "section_assistant") {
-                SmallTitle("助理配置")
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     SwitchPref(
                         context = context,
                         prefs = prefs,
@@ -241,61 +277,54 @@ internal fun SettingsScreen(
                         icon = LucideR.drawable.lucide_ic_mic,
                         iconTint = ColorOSLightBlue,
                     )
+                    PrefDivider()
+                    ArrowPreference(
+                        title = "将 Google App 转为系统应用",
+                        startAction = {
+                            TintedIcon(
+                                icon = LucideR.drawable.lucide_ic_shield,
+                                tint = ColorOSVividGreen,
+                            )
+                        },
+                        enabled = !installingSystemizer,
+                        holdDownState = showSystemizerDialog,
+                        onClick = {
+                            if (!installingSystemizer) {
+                                showSystemizerDialog = true
+                            }
+                        },
+                    )
                 }
             }
 
-            // ── 小布自定义模型 ─────────────────────────────────────────────
-            item(key = "section_agent_model") {
-                SmallTitle("小布自定义模型")
+            // ── 一圈即搜 ────────────────────────────────────────────────
+            item(key = "section_circle_to_search") {
+                SmallTitle("一圈即搜")
                 Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     SwitchPref(
                         context = context,
                         prefs = prefs,
-                        title = "启用小布自定义模型",
-                        key = Prefs.Keys.AGENT_CUSTOM_MODEL,
-                        icon = LucideR.drawable.lucide_ic_cpu,
-                        iconTint = ColorOSPurple,
-                    )
-                    PrefDivider()
-                    SwitchPref(
-                        context = context,
-                        prefs = prefs,
-                        title = "仅 /agent 前缀接管",
-                        key = Prefs.Keys.AGENT_REQUIRE_PREFIX,
-                        icon = LucideR.drawable.lucide_ic_message_square,
-                        iconTint = ColorOSOrangeRed,
-                    )
-                    PrefDivider()
-                    SwitchPref(
-                        context = context,
-                        prefs = prefs,
-                        title = "启用终端/文件工具",
-                        key = Prefs.Keys.AGENT_TERMINAL_TOOLS,
-                        icon = LucideR.drawable.lucide_ic_square_terminal,
-                        iconTint = ColorOSAmberYellow,
-                    )
-                    PrefDivider()
-                    SwitchPref(
-                        context = context,
-                        prefs = prefs,
-                        title = "默认启用深度思考",
-                        key = Prefs.Keys.AGENT_THINKING_ENABLED,
-                        icon = LucideR.drawable.lucide_ic_brain,
+                        title = "手势条长按触发一圈即搜",
+                        key = Prefs.Keys.GESTURE_BAR_CIRCLE_TO_SEARCH,
+                        icon = LucideR.drawable.lucide_ic_search,
                         iconTint = ColorOSRoyalBlue,
                     )
                     PrefDivider()
-                    ArrowPreference(
-                        title = "模型提供商",
-                        summary = providerSummary,
-                        startAction = {
-                            TintedIcon(
-                                icon = LucideR.drawable.lucide_ic_cpu,
-                                tint = ColorOSPurple,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.ModelProviders) },
+                    SwitchPref(
+                        context = context,
+                        prefs = prefs,
+                        title = "双指长按触发一圈即搜",
+                        key = Prefs.Keys.DOUBLE_FINGER_CIRCLE_TO_SEARCH,
+                        icon = LucideR.drawable.lucide_ic_mouse_pointer_click,
+                        iconTint = ColorOSLightBlue,
                     )
-                    PrefDivider()
+                }
+            }
+
+            // ── 权限 ────────────────────────────────────────────────────
+            item(key = "section_permissions") {
+                SmallTitle("权限")
+                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = "悬浮窗权限",
                         startAction = {
@@ -360,27 +389,10 @@ internal fun SettingsScreen(
                 }
             }
 
-            // ── 高级 ────────────────────────────────────────────────────
-            item(key = "section_systemizer") {
-                SmallTitle("高级")
+            // ── 关于 ────────────────────────────────────────────────────
+            item(key = "section_about") {
+                SmallTitle("关于")
                 Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = "将 Google App 转为系统应用",
-                        startAction = {
-                            TintedIcon(
-                                icon = LucideR.drawable.lucide_ic_shield,
-                                tint = ColorOSVividGreen,
-                            )
-                        },
-                        enabled = !installingSystemizer,
-                        holdDownState = showSystemizerDialog,
-                        onClick = {
-                            if (!installingSystemizer) {
-                                showSystemizerDialog = true
-                            }
-                        },
-                    )
-                    PrefDivider()
                     ArrowPreference(
                         title = "源代码",
                         startAction = {

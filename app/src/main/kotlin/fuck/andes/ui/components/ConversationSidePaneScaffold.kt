@@ -107,6 +107,7 @@ fun ConversationSidePaneScaffold(
     onConversationRename: (ConversationSummaryUi) -> Unit,
     onConversationDelete: (ConversationSummaryUi) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenModelProviders: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
@@ -148,6 +149,7 @@ fun ConversationSidePaneScaffold(
             onConversationRename = onConversationRename,
             onConversationDelete = onConversationDelete,
             onOpenSettings = onOpenSettings,
+            onOpenModelProviders = onOpenModelProviders,
             onOpenTools = onOpenTools,
             onOpenSkills = onOpenSkills,
             onOpenPermissions = onOpenPermissions,
@@ -224,6 +226,7 @@ private fun ConversationPanePanel(
     onConversationRename: (ConversationSummaryUi) -> Unit,
     onConversationDelete: (ConversationSummaryUi) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenModelProviders: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
@@ -293,6 +296,7 @@ private fun ConversationPanePanel(
             Spacer(modifier = Modifier.height(DrawerMetrics.DockTopGap))
             PaneDock(
                 onOpenSettings = onOpenSettings,
+                onOpenModelProviders = onOpenModelProviders,
                 onOpenTools = onOpenTools,
                 onOpenSkills = onOpenSkills,
                 onOpenPermissions = onOpenPermissions,
@@ -508,6 +512,7 @@ private fun EmptyConversations(isSearching: Boolean) {
 @Composable
 private fun PaneDock(
     onOpenSettings: () -> Unit,
+    onOpenModelProviders: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
@@ -523,12 +528,17 @@ private fun PaneDock(
             onClick = onOpenSettings,
         )
         DockButton(
+            icon = LucideR.drawable.lucide_ic_cpu,
+            label = "模型",
+            onClick = onOpenModelProviders,
+        )
+        DockButton(
             icon = LucideR.drawable.lucide_ic_package,
             label = "工具",
             onClick = onOpenTools,
         )
         DockButton(
-            icon = LucideR.drawable.lucide_ic_sparkles,
+            icon = LucideR.drawable.lucide_ic_puzzle,
             label = "技能",
             onClick = onOpenSkills,
         )

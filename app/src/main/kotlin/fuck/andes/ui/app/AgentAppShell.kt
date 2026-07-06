@@ -47,6 +47,7 @@ fun AgentAppShell(
     onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenModelProviders: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable (PaddingValues) -> Unit,
 ) {
@@ -83,6 +84,7 @@ fun AgentAppShell(
                 onConversationRename = onConversationRename,
                 onConversationDelete = onConversationDelete,
                 onOpenSettings = onOpenSettings,
+                onOpenModelProviders = onOpenModelProviders,
                 onOpenTools = onOpenTools,
                 onOpenSkills = onOpenSkills,
                 onOpenPermissions = onOpenPermissions,
