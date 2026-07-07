@@ -11,8 +11,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 internal object AgentImageCodec {
-    private const val MAX_EDGE = 1080
-    private const val JPEG_QUALITY = 82
     private const val MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
     fun fromBytes(
@@ -20,32 +18,34 @@ internal object AgentImageCodec {
         source: String,
         mimeHint: String = "image/jpeg"
     ): AgentModelClient.ModelImage {
-        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        if (decoded == null) {
-            val mime = mimeHint.ifBlank { "image/jpeg" }
-            return AgentModelClient.ModelImage(
-                dataUrl = "data:$mime;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}",
-                mimeType = mime,
-                bytes = bytes.size,
-                source = source
-            )
-        }
-
-        val scaled = decoded.scaleDown(MAX_EDGE)
-        val output = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, output)
-        val width = scaled.width
-        val height = scaled.height
-        val jpeg = output.toByteArray()
-        if (scaled !== decoded) scaled.recycle()
-        decoded.recycle()
-
+        // 全局发原图：直接 base64 原始 bytes，不 decode+re-encode（零损失），只读尺寸/mime
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        val mime = opts.outMimeType?.takeIf { it.isNotBlank() } ?: mimeHint.ifBlank { "image/jpeg" }
         return AgentModelClient.ModelImage(
-            dataUrl = "data:image/jpeg;base64,${Base64.encodeToString(jpeg, Base64.NO_WRAP)}",
-            mimeType = "image/jpeg",
-            bytes = jpeg.size,
-            width = width,
-            height = height,
+            dataUrl = "data:$mime;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}",
+            mimeType = mime,
+            bytes = bytes.size,
+            width = opts.outWidth.takeIf { it > 0 },
+            height = opts.outHeight.takeIf { it > 0 },
+            source = source
+        )
+    }
+
+    fun fromBitmap(
+        bitmap: Bitmap,
+        source: String,
+    ): AgentModelClient.ModelImage {
+        // 截图为合成 Bitmap（无原始 bytes），PNG 无损编码保持原分辨率
+        val output = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        val png = output.toByteArray()
+        return AgentModelClient.ModelImage(
+            dataUrl = "data:image/png;base64,${Base64.encodeToString(png, Base64.NO_WRAP)}",
+            mimeType = "image/png",
+            bytes = png.size,
+            width = bitmap.width,
+            height = bitmap.height,
             source = source
         )
     }
@@ -96,15 +96,6 @@ internal object AgentImageCodec {
             val decoded = Base64.decode(trimmed, Base64.DEFAULT)
             if (decoded.hasImageMagic()) fromBytes(decoded, source) else null
         }.getOrNull()
-    }
-
-    private fun Bitmap.scaleDown(maxEdge: Int): Bitmap {
-        val edge = maxOf(width, height)
-        if (edge <= maxEdge) return this
-        val scale = maxEdge.toFloat() / edge.toFloat()
-        val targetWidth = (width * scale).toInt().coerceAtLeast(1)
-        val targetHeight = (height * scale).toInt().coerceAtLeast(1)
-        return Bitmap.createScaledBitmap(this, targetWidth, targetHeight, true)
     }
 
     private fun File.readBytesLimited(): ByteArray {

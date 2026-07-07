@@ -27,9 +27,10 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import fuck.andes.agent.accessibility.AgentAccessibilityService
 import fuck.andes.agent.model.AgentModelClient
-import fuck.andes.agent.overlay.AgentOverlayContent
+import fuck.andes.agent.overlay.AgentOverlayBubble
 import fuck.andes.agent.overlay.AgentOverlayGlow
 import fuck.andes.agent.overlay.AgentOverlayOrb
+import fuck.andes.agent.overlay.AgentResultCard
 import fuck.andes.agent.overlay.AgentOverlayPhase
 import fuck.andes.agent.overlay.AgentOverlayState
 import fuck.andes.agent.overlay.AgentOverlayVisibilityPolicy
@@ -73,13 +74,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private var windowManager: WindowManager? = null
     private var glowView: ComposeView? = null
     private var orbView: ComposeView? = null
-    private var panelView: ComposeView? = null
+    private var bubbleView: ComposeView? = null
+    private var resultCardView: ComposeView? = null
     private var glowParams: WindowManager.LayoutParams? = null
     private var orbParams: WindowManager.LayoutParams? = null
-    private var panelParams: WindowManager.LayoutParams? = null
+    private var bubbleParams: WindowManager.LayoutParams? = null
+    private var resultCardParams: WindowManager.LayoutParams? = null
 
     private val state = mutableStateOf(AgentOverlayState.Initial)
-    private val collapsed = mutableStateOf(false)
+    private val collapsed = mutableStateOf(true)
     private var hasExecutedForegroundTool = false
     private val supplementsLock = Any()
     private val activeSupplements = mutableListOf<AgentUiHandoffPayload.Supplement>()
@@ -119,13 +122,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         activeRunController = null
         activeRunId = null
         mainHandler.removeCallbacksAndMessages(null)
-        panelView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
         orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
         glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        panelView = null
+        resultCardView = null
+        bubbleView = null
         orbView = null
         glowView = null
-        panelParams = null
+        resultCardParams = null
+        bubbleParams = null
         orbParams = null
         glowParams = null
         windowManager = null
@@ -196,7 +202,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         mainHandler.removeCallbacksAndMessages(hideToken)
         state.value = AgentOverlayState.Initial
-        collapsed.value = false
+        collapsed.value = true
         hasExecutedForegroundTool = false
         synchronized(supplementsLock) {
             activeSupplements.clear()
@@ -469,7 +475,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun requestSupplement(text: String) {
         val supplementText = text.trim()
         if (supplementText.isBlank()) return
-        setPanelInputMode(focusable = false)
+        setBubbleInputMode(focusable = false)
         activeRunController?.let { controller ->
             val event = recordSupplementEvent(supplementText)
             AndroidAgentLogger.info("Agent runtime supplement received: index=${event.index}, chars=${event.text.length}")
@@ -509,12 +515,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun showOverlay() {
         if (orbView != null) return
-        if (!Settings.canDrawOverlays(this)) return
-        val wm = getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
+        // TYPE_ACCESSIBILITY_OVERLAY 免 SYSTEM_ALERT_WINDOW 权限；仅回退态（无障碍未启用）才需检查
+        if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(this)) return
+        val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
         windowManager = wm
 
-        // ── 氛围光窗口：全屏触摸穿透，屏幕四边光圈 ──────────────────
-        val glow = ComposeView(this).apply {
+        // ── 氛围光窗口：全屏触摸穿透，彩虹光圈，截图时被 takeScreenshotOfWindow 过滤 ─
+        val glow = ComposeView(overlayContext()).apply {
             setViewTreeLifecycleOwner(this@AgentRuntimeService)
             setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
             setContent {
@@ -531,7 +538,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         glowParams = glowLp
 
         // ── 光球窗口：始终显示，右侧中下 ──────────────────────────────
-        val orb = ComposeView(this).apply {
+        val orb = ComposeView(overlayContext()).apply {
             setViewTreeLifecycleOwner(this@AgentRuntimeService)
             setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
             setContent {
@@ -550,13 +557,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         orbView = orb
         orbParams = orbLp
+        orb.visibility = View.VISIBLE
 
-        // ── 卡片窗口：展开态显示，底部居中 ────────────────────────────
+        // ── 小气泡窗口：展开态显示，跟随光球，窗口外触摸穿透 ─────────
         if (!collapsed.value) {
-            orb.visibility = View.GONE
-            showPanel(wm)
-        } else {
-            orb.visibility = View.VISIBLE
+            showBubble(wm)
         }
     }
 
@@ -564,42 +569,63 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         collapsed.value = !collapsed.value
         val wm = windowManager ?: return
         if (collapsed.value) {
-            panelView?.let { view -> runCatching { wm.removeView(view) } }
-            panelView = null
-            panelParams = null
-            orbView?.visibility = View.VISIBLE
+            bubbleView?.let { view -> runCatching { wm.removeView(view) } }
+            bubbleView = null
+            bubbleParams = null
         } else {
-            if (panelView == null) showPanel(wm)
+            if (bubbleView == null) showBubble(wm)
         }
     }
 
-    private fun showPanel(wm: WindowManager) {
-        if (panelView != null) return
-        val panel = ComposeView(this).apply {
+    private fun showBubble(wm: WindowManager) {
+        if (bubbleView != null) return
+        val bubble = ComposeView(overlayContext()).apply {
             setViewTreeLifecycleOwner(this@AgentRuntimeService)
             setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
             setContent {
                 MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
-                    AgentOverlayContent(
+                    AgentOverlayBubble(
                         state = state.value,
                         onCollapse = ::toggleCollapse,
                         onPause = ::requestPause,
                         onResume = ::requestResume,
                         onStop = ::requestStop,
-                        onSupplementModeChange = ::setPanelInputMode,
+                        onSupplementModeChange = ::setBubbleInputMode,
                         onSupplement = ::requestSupplement,
                     )
                 }
             }
         }
-        val lp = panelLayoutParams()
-        runCatching { wm.addView(panel, lp) }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime panel addView failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+        val lp = bubbleLayoutParams()
+        runCatching { wm.addView(bubble, lp) }.onFailure { throwable ->
+            AndroidAgentLogger.warn("Agent runtime bubble addView failed: ${throwable.message ?: throwable.javaClass.simpleName}")
             return
         }
-        panelView = panel
-        panelParams = lp
-        orbView?.visibility = View.GONE
+        bubbleView = bubble
+        bubbleParams = lp
+    }
+
+    private fun showResultCard(wm: WindowManager) {
+        if (resultCardView != null) return
+        val card = ComposeView(overlayContext()).apply {
+            setViewTreeLifecycleOwner(this@AgentRuntimeService)
+            setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
+            setContent {
+                MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
+                    AgentResultCard(
+                        state = state.value,
+                        onClose = ::dismissAndStop,
+                    )
+                }
+            }
+        }
+        val lp = resultCardLayoutParams()
+        runCatching { wm.addView(card, lp) }.onFailure { throwable ->
+            AndroidAgentLogger.warn("Agent runtime result card addView failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+            return
+        }
+        resultCardView = card
+        resultCardParams = lp
     }
 
     @Suppress("unused")
@@ -616,7 +642,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -628,40 +654,51 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             y = (resources.displayMetrics.heightPixels * 0.6f).toInt()
         }
 
-    private fun panelLayoutParams(): WindowManager.LayoutParams =
+    private fun bubbleLayoutParams(): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            panelWindowHeightPx(),
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            // 底部居中，安全区由 Compose 内部 navigationBarsPadding 处理
+            // 跟随光球：右侧中下，窗口外触摸穿透
+            gravity = Gravity.END or Gravity.TOP
+            x = dpToPx(72)
+            y = (resources.displayMetrics.heightPixels * 0.6f).toInt()
+            windowAnimations = 0
+        }
+
+    private fun resultCardLayoutParams(): WindowManager.LayoutParams =
+        WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            resultCardWindowHeightPx(),
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            // 半屏底部居中，窗口外触摸穿透
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             x = 0
             y = 0
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
         }
 
-    private fun setPanelInputMode(focusable: Boolean) {
-        val wm = windowManager ?: return
-        val panel = panelView ?: return
-        val lp = panelParams ?: return
-        val nextHeight = panelWindowHeightPx()
-        val nextFlags = if (focusable) {
-            lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-        } else {
-            lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        }
-        if (lp.flags == nextFlags && lp.height == nextHeight) return
-        lp.flags = nextFlags
-        lp.height = nextHeight
-        runCatching { wm.updateViewLayout(panel, lp) }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime panel focus update failed: ${throwable.message ?: throwable.javaClass.simpleName}")
-        }
-    }
+    private fun overlayType(): Int =
+        // 无障碍服务可用时用 TYPE_ACCESSIBILITY_OVERLAY（免 SYSTEM_ALERT_WINDOW 权限，且截图
+        // filterValidWindows 可过滤）；需用无障碍服务 context 创建，否则 BadTokenException
+        if (AgentAccessibilityService.current() != null)
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        else
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 
-    private fun panelWindowHeightPx(): Int = dpToPx(PANEL_WINDOW_HEIGHT_DP)
+    private fun overlayContext(): Context =
+        AgentAccessibilityService.current() ?: this
 
     @Suppress("DEPRECATION")
     private fun glowLayoutParams(): WindowManager.LayoutParams {
@@ -675,19 +712,39 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         return WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             realHeight,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            // 全屏覆盖（含状态栏/导航栏），触摸穿透不拦截页面操作
+            // 全屏覆盖（含状态栏/导航栏），触摸穿透不拦截页面操作；
+            // TYPE_ACCESSIBILITY_OVERLAY 让 takeScreenshotOfWindow 过滤掉，对 Agent 透明
             gravity = Gravity.TOP or Gravity.START
             x = 0
             y = 0
         }
     }
+
+    private fun setBubbleInputMode(focusable: Boolean) {
+        val wm = windowManager ?: return
+        val bubble = bubbleView ?: return
+        val lp = bubbleParams ?: return
+        val nextFlags = if (focusable) {
+            lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        } else {
+            lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        if (lp.flags == nextFlags) return
+        lp.flags = nextFlags
+        runCatching { wm.updateViewLayout(bubble, lp) }.onFailure { throwable ->
+            AndroidAgentLogger.warn("Agent runtime bubble focus update failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+        }
+    }
+
+    private fun resultCardWindowHeightPx(): Int =
+        (resources.displayMetrics.heightPixels * RESULT_CARD_HEIGHT_RATIO).toInt()
 
     private fun dpToPx(dp: Int): Int =
         (dp * resources.displayMetrics.density).toInt()
@@ -695,15 +752,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun enterFinalState(finalState: AgentOverlayState, keepVisible: Boolean = false) {
         state.value = finalState
         clientMessenger = null
-        
-        if (hasExecutedForegroundTool) {
-            // Always display the final status panel card, never collapse it.
-            collapsed.value = false
-            ensureOverlayVisible()
-            removeAmbientWindows()
-            windowManager?.let(::showPanel)
 
-            // Clear any auto-close timers. Let the user manually close it.
+        if (hasExecutedForegroundTool) {
+            // 撤掉光球和小气泡，改显半屏结果卡片，不自动关闭，用户手动关闭
+            collapsed.value = true
+            removeAmbientWindows()
+            windowManager?.let(::showResultCard)
             mainHandler.removeCallbacksAndMessages(hideToken)
         } else {
             dismissAndStop()
@@ -712,21 +766,27 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun removeAmbientWindows() {
         orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
         glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
         orbView = null
+        bubbleView = null
         glowView = null
         orbParams = null
+        bubbleParams = null
         glowParams = null
     }
 
     private fun dismissAndStop() {
-        panelView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
         orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
         glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        panelView = null
+        resultCardView = null
+        bubbleView = null
         orbView = null
         glowView = null
-        panelParams = null
+        resultCardParams = null
+        bubbleParams = null
         orbParams = null
         glowParams = null
         windowManager = null
@@ -794,7 +854,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         const val ACTION_KEEP_ALIVE = "fuck.andes.agent.runtime.KEEP_ALIVE"
         const val HIDE_DELAY_MS = 2_500L
         const val RESULT_REVIEW_DELAY_MS = 120_000L
-        const val PANEL_WINDOW_HEIGHT_DP = 380
+        const val RESULT_CARD_HEIGHT_RATIO = 0.5f
     }
 
     private data class CompletedRunContext(

@@ -5,20 +5,29 @@ import android.accessibilityservice.GestureDescription
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Path
+import android.graphics.Point
 import android.graphics.Rect
+import android.graphics.RectF
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 
 class AgentAccessibilityService : AccessibilityService() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val mainThreadExecutor = Executor { command -> mainHandler.post(command) }
     private var lastNodes: List<IndexedNode> = emptyList()
 
     override fun onServiceConnected() {
@@ -148,6 +157,120 @@ class AgentAccessibilityService : AccessibilityService() {
         JSONObject()
             .put("available", true)
             .put("package", currentPackageName().orEmpty())
+
+    /**
+     * 截取当前屏幕，排除 TYPE_ACCESSIBILITY_OVERLAY 浮层（glow/orb/bubble/resultCard/GestureIndicator）。
+     * 从 agent-runtime 子线程调用；takeScreenshotOfWindow 内部 post 到主线程，
+     * callback 经 mainThreadExecutor 回主线程，latch 在子线程等待，不阻塞主线程。
+     * 参考 OpenOmniBot OmniScreenshotAction.captureExcludingOverlaysV14。
+     */
+    fun captureScreenshotExcludingOverlays(): Bitmap? {
+        val allWindows = windows ?: return null
+        val wm = getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return null
+        val point = Point()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getRealSize(point)
+        val screenW = point.x
+        val screenH = point.y
+
+        // 过滤掉无障碍 overlay 窗口（即我们自己的浮层 glow/orb/bubble/resultCard/GestureIndicator，
+        // 均为 TYPE_ACCESSIBILITY_OVERLAY），保留应用窗口 + 系统 UI（状态栏等）
+        val validWindows = allWindows.filter {
+            it.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY
+        }
+        if (validWindows.isEmpty()) return null
+
+        val sorted = validWindows.sortedBy { it.layer }
+        val latch = CountDownLatch(sorted.size)
+        val screenshots = mutableMapOf<Int, Pair<Bitmap, Rect>>()
+        val lock = Any()
+        var successCount = 0
+
+        for (window in sorted) {
+            val windowId = window.id
+            runCatching {
+                takeScreenshotOfWindow(windowId, mainThreadExecutor, object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        try {
+                            screenshot.hardwareBuffer.use { hb ->
+                                val bmp = Bitmap.wrapHardwareBuffer(hb, screenshot.colorSpace)
+                                if (bmp != null) {
+                                    val sw = convertToSoftwareBitmap(bmp)
+                                    val bounds = Rect()
+                                    window.getBoundsInScreen(bounds)
+                                    synchronized(lock) {
+                                        screenshots[windowId] = sw to bounds
+                                        successCount++
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // 单个窗口截图失败不阻断整体
+                        } finally {
+                            latch.countDown()
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        // errorCode 6 = FLAG_SECURE 安全窗口，无法截图，正常跳过
+                        latch.countDown()
+                    }
+                })
+            }.onFailure {
+                latch.countDown()
+            }
+        }
+        latch.await(2, TimeUnit.SECONDS)
+        if (successCount == 0) {
+            sorted.forEach { runCatching { it.recycle() } }
+            return null
+        }
+        // merge 必须在 recycle 之前：merge 内用 window.id 查 screenshots，
+        // recycle 后 window.id 失效会查不到 → 合成全黑
+        val merged = mergeScreenshots(screenshots, sorted, screenW, screenH)
+        android.util.Log.d(
+            "AgentA11y",
+            "captureScreenshot: allWindows=${allWindows.size} valid=${validWindows.size} " +
+                "success=$successCount screenshots=${screenshots.size} " +
+                "screen=${screenW}x${screenH} merged=${merged?.width}x${merged?.height}"
+        )
+        sorted.forEach { runCatching { it.recycle() } }
+        return merged
+    }
+
+    private fun convertToSoftwareBitmap(bitmap: Bitmap): Bitmap =
+        if (bitmap.config == Bitmap.Config.HARDWARE) {
+            bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        } else {
+            bitmap
+        }
+
+    private fun mergeScreenshots(
+        screenshots: Map<Int, Pair<Bitmap, Rect>>,
+        sortedWindows: List<AccessibilityWindowInfo>,
+        screenWidth: Int,
+        screenHeight: Int
+    ): Bitmap? {
+        return try {
+            val merged = Bitmap.createBitmap(screenWidth, screenHeight, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(merged)
+            canvas.drawColor(Color.BLACK)
+            for (window in sortedWindows) {
+                val pair = screenshots[window.id] ?: continue
+                val (bmp, bounds) = pair
+                if (bmp.isRecycled) continue
+                runCatching {
+                    // 把窗口 bitmap 缩放到其 bounds 尺寸绘制，处理 takeScreenshotOfWindow
+                    // 返回尺寸与 bounds 不一致（逻辑像素 vs 物理像素）的情况
+                    val src = Rect(0, 0, bmp.width, bmp.height)
+                    canvas.drawBitmap(bmp, src, RectF(bounds), null)
+                }
+            }
+            merged
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     private fun setNodeText(node: AccessibilityNodeInfo, text: String): Boolean {
         val args = Bundle().apply {

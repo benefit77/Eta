@@ -572,7 +572,7 @@ internal class AgentLocalTools(
         }
         vibrator?.let {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                it.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                it.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE))
             } else {
                 @Suppress("DEPRECATION")
                 it.vibrate(50)

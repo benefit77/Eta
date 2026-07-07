@@ -14,6 +14,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import fuck.andes.agent.accessibility.AgentAccessibilityService
 
 object GestureIndicator {
@@ -103,31 +104,33 @@ object GestureIndicator {
 
 private class TapIndicatorView(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private var scale = 0f
-    private var alphaVal = 1f
-    private var animator: ValueAnimator? = null
+    private val density = resources.displayMetrics.density
 
     init {
         paint.color = 0xFF2879FB.toInt() // Premium tech blue
     }
 
     fun startAnimation(onFinished: () -> Unit) {
-        animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 350
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { animation ->
-                val fraction = animation.animatedValue as Float
-                scale = fraction
-                alphaVal = 1f - fraction
-                invalidate()
+        // 抄 OpenOmniBot ClickIndicator：Overshoot 弹入 → 停顿 → Decelerate 淡出
+        alpha = 0f
+        scaleX = 0.5f
+        scaleY = 0.5f
+        animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(200L)
+            .setInterpolator(OvershootInterpolator(2.0f))
+            .withEndAction {
+                animate()
+                    .alpha(0f)
+                    .setDuration(200L)
+                    .setStartDelay(100L)
+                    .setInterpolator(DecelerateInterpolator())
+                    .withEndAction { onFinished() }
+                    .start()
             }
-            addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: Animator) {
-                    onFinished()
-                }
-            })
-            start()
-        }
+            .start()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -135,18 +138,17 @@ private class TapIndicatorView(context: Context) : View(context) {
         val cx = width / 2f
         val cy = height / 2f
         val maxRadius = Math.min(cx, cy) * 0.8f
-        val density = resources.displayMetrics.density
 
-        // Solid inner circle
+        // 实心内圈
         paint.style = Paint.Style.FILL
-        paint.alpha = (alphaVal * 0.4f * 255).toInt()
-        canvas.drawCircle(cx, cy, maxRadius * scale * 0.5f, paint)
+        paint.alpha = (0.4f * 255).toInt()
+        canvas.drawCircle(cx, cy, maxRadius * 0.5f, paint)
 
-        // Outer ring
+        // 描边外圈
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 3f * density
-        paint.alpha = (alphaVal * 255).toInt()
-        canvas.drawCircle(cx, cy, maxRadius * scale, paint)
+        paint.alpha = 255
+        canvas.drawCircle(cx, cy, maxRadius, paint)
     }
 }
 

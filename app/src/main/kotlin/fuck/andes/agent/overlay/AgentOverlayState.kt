@@ -7,7 +7,7 @@ import fuck.andes.agent.runtime.AgentEvent
 internal enum class AgentOverlayPhase { RUNNING, PAUSED, FINISHED, FAILED }
 
 /**
- * Agent 浮窗的渲染状态。由 [AgentEvent] 流累积而来，[AgentOverlayContent] 直接消费。
+ * Agent 浮窗的渲染状态。由 [AgentEvent] 流累积而来，[AgentOverlayBubble] 直接消费。
  */
 @Immutable
 internal data class AgentOverlayState(
