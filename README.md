@@ -1,4 +1,6 @@
-# [项目名称]
+# Eta
+
+<p align="center"><strong>AI Agent for Android</strong></p>
 
 <p align="center">一个第三方 Android 系统级 AI Agent，能操作手机界面，也能像 Coding Agent 一样读文件、跑命令。</p>
 
@@ -29,7 +31,7 @@
 
 Agent 不会问一句答一句就结束。它在一个 loop 里运转：模型发指令，系统执行，结果写回上下文，模型再决定下一步。如此往复，直到做完。
 
-Agent 同时掌握 GUI 和终端两个入口，这和主流 Coding Agent 的逻辑一致——屏幕是表层，shell 才是完整计算环境。
+作为 Android AI Agent，Eta 同时具备 GUI 操作和终端执行能力，这和主流 Coding Agent 的逻辑一致——屏幕是表层，shell 才是完整计算环境。
 
 **GUI 操作**
 
@@ -108,11 +110,11 @@ BYOK（Bring Your Own Key）意味着 Agent 能力跟随你选择的模型，而
 
 ## 项目结构
 
-核心代码在 `app/src/main/kotlin/fuck/andes/`：
+核心代码在 `app/src/main/kotlin/`：
 
 ```
 ModuleMain.kt              Xposed 模块入口
-FuckAndesApp.kt            App 初始化
+Application 层             App 初始化
 
 hook/system/               system_server Hook
 hook/google/               Google App 进程 Hook

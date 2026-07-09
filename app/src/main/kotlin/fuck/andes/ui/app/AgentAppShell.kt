@@ -150,5 +150,5 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.ModelProviders -> "模型提供商"
     is AppRoute.ModelProviderDetail -> route.providerId.let { "Provider 详情" }
     is AppRoute.ModelProviderNew -> "新建提供商"
-    null -> "FuckAndes"
+    null -> "Eta"
 }

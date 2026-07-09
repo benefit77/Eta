@@ -232,7 +232,7 @@ internal class RootShellDeviceController(
             }
             return errorJson("ACCESSIBILITY_ACTION_FAILED", "未找到可编辑节点或文本替换失败")
         }
-        return errorJson("ACCESSIBILITY_UNAVAILABLE", "replace_text 需要先启用 FuckAndes Agent 增强无障碍服务")
+        return errorJson("ACCESSIBILITY_UNAVAILABLE", "replace_text 需要先启用 Eta 设备控制无障碍服务")
     }
 
     fun clearText(index: Int?): String =

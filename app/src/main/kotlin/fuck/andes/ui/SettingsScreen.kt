@@ -613,8 +613,8 @@ private fun SystemizerInstallResult.toToastMessage(): String =
         SystemizerInstallResult.UnsupportedRootManager -> "未检测到 Magisk 或 KernelSU"
         SystemizerInstallResult.KernelSuMetamoduleMissing -> "KernelSU 需先启用 metamodule 支持"
         is SystemizerInstallResult.RootPermissionUnavailable -> when (rootManager) {
-            RootManager.KERNEL_SU -> "请在 KernelSU 中授予 FuckAndes root 权限"
-            RootManager.MAGISK -> "请在 Magisk 中授予 FuckAndes root 权限"
+            RootManager.KERNEL_SU -> "请在 KernelSU 中授予 Eta root 权限"
+            RootManager.MAGISK -> "请在 Magisk 中授予 Eta root 权限"
             RootManager.UNSUPPORTED -> "未获得 root 权限"
         }
         is SystemizerInstallResult.InstalledRebootRequired -> "安装完成，重启后生效"

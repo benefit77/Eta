@@ -453,7 +453,7 @@ internal object BreenoHooks {
                         ?.let { baseConfig.copy(thinkingEnabled = it) }
                         ?: baseConfig
                     if (!Prefs.isEnabled(Prefs.Keys.AGENT_CUSTOM_MODEL)) {
-                        error("请先在 FuckAndes 设置中启用“小布自定义模型”")
+                        error("请先在 Eta 设置中启用“小布自定义模型”")
                     }
                     val context = AgentAppContext.resolve()
                         ?: error("无法获取小布进程 Context")
