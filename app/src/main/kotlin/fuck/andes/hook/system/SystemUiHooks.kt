@@ -1,6 +1,8 @@
 package fuck.andes.hook.system
 
 import fuck.andes.core.HookSupport
+import fuck.andes.core.HookInstallation
+import fuck.andes.core.HookRegistrar
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.ModuleLogger
 
@@ -21,48 +23,61 @@ internal object SystemUiHooks {
     @Volatile
     private var vibrationHelperVibrateCustomizedMethod: Method? = null
 
-    fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
-        systemUiClassLoader = classLoader
-        val businessClass = HookSupport.findClassOrNull(classLoader, ModuleConfig.OCR_BUSINESS_CLASS)
-        val onLongPressedMethod = businessClass?.let {
-            HookSupport.findMethod(it, "onLongPressed")
-        }
-        if (onLongPressedMethod == null) {
-            logger.warn("未找到 OplusOcrScreenBusiness.onLongPressed()")
-            return
-        }
-
-        HookSupport.hookMethod(
-            module,
-            logger,
-            onLongPressedMethod,
-            "OplusOcrScreenBusiness.onLongPressed"
-        ) { chain ->
-            // 开关关闭则走原 OCR 逻辑。
-            if (!Prefs.isEnabled(Prefs.Keys.GESTURE_BAR_CIRCLE_TO_SEARCH)) {
-                return@hookMethod chain.proceed()
+    fun install(
+        module: XposedModule,
+        rootLogger: ModuleLogger,
+        classLoader: ClassLoader
+    ): HookInstallation {
+        val hooks = HookRegistrar(module, rootLogger, "SystemUI")
+        val logger = hooks.logger
+        return hooks.install {
+            systemUiClassLoader = classLoader
+            val businessClass = HookSupport.findClassOrNull(classLoader, ModuleConfig.OCR_BUSINESS_CLASS)
+            val onLongPressedMethod = businessClass?.let {
+                HookSupport.findMethod(it, "onLongPressed")
             }
-            val context = resolveContext(chain.getThisObject())
-            if (context == null) {
-                logger.warnThrottled("systemui_context", "SystemUI 无法取得 Context，回退原 OCR 逻辑")
-                return@hookMethod chain.proceed()
-            }
-
-            if (!CircleToSearchInvoker.isAvailable(
-                    context,
-                    logger,
-                    "SystemUI",
-                    "回退原 OCR 逻辑"
+            if (onLongPressedMethod == null) {
+                hooks.missing(
+                    id = "systemui.ocr-long-press",
+                    description = "OplusOcrScreenBusiness.onLongPressed",
+                    detail = "未找到 OplusOcrScreenBusiness.onLongPressed()"
                 )
-            ) {
-                return@hookMethod chain.proceed()
+                return@install
             }
 
-            if (CircleToSearchInvoker.trigger(logger, "SystemUI")) {
-                performOriginalLongPressHaptic(context, logger)
-                null
-            } else {
-                chain.proceed()
+            hooks.intercept(
+                id = "systemui.ocr-long-press",
+                executable = onLongPressedMethod,
+                description = "OplusOcrScreenBusiness.onLongPressed"
+            ) { chain ->
+                // 开关关闭则走原 OCR 逻辑。
+                if (!Prefs.isEnabled(Prefs.Keys.GESTURE_BAR_CIRCLE_TO_SEARCH)) {
+                    return@intercept chain.proceed()
+                }
+                val context = resolveContext(chain.getThisObject())
+                if (context == null) {
+                    logger.warnThrottled("systemui_context") {
+                        "SystemUI 无法取得 Context，回退原 OCR 逻辑"
+                    }
+                    return@intercept chain.proceed()
+                }
+
+                if (!CircleToSearchInvoker.isAvailable(
+                        context,
+                        logger,
+                        "SystemUI",
+                        "回退原 OCR 逻辑"
+                    )
+                ) {
+                    return@intercept chain.proceed()
+                }
+
+                if (CircleToSearchInvoker.trigger(logger, "SystemUI")) {
+                    performOriginalLongPressHaptic(context, logger)
+                    null
+                } else {
+                    chain.proceed()
+                }
             }
         }
     }
@@ -75,18 +90,16 @@ internal object SystemUiHooks {
 
     private fun performOriginalLongPressHaptic(context: Context, logger: ModuleLogger) {
         val vibrationHelper = resolveVibrationHelper(context) ?: run {
-            logger.warnThrottled(
-                "systemui_cts_vibration_helper_missing",
+            logger.warnThrottled("systemui_cts_vibration_helper_missing") {
                 "SystemUI: 无法取得原生 VibrationHelper，跳过导航条长按震动"
-            )
+            }
             return
         }
 
         if (!invokeVibrateCustomized(vibrationHelper, context)) {
-            logger.warnThrottled(
-                "systemui_cts_linear_haptic_failed",
+            logger.warnThrottled("systemui_cts_linear_haptic_failed") {
                 "SystemUI: 调用原生导航条长按震动失败"
-            )
+            }
         }
     }
 

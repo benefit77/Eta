@@ -2,7 +2,6 @@ package fuck.andes.core
 
 internal object ModuleConfig {
     const val TAG = "FuckAndes"
-    const val ENABLE_VERBOSE_LOGS = false
     const val HOT_PATH_LOG_WINDOW_MS = 60_000L
 
     const val GOOGLE_PACKAGE = "com.google.android.googlequicksearchbox"

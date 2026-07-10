@@ -2,12 +2,12 @@ package fuck.andes.agent.accessibility
 
 import android.content.ComponentName
 import android.content.Context
-import android.util.Log
+import android.content.Intent
+import fuck.andes.core.AndroidAgentLogger
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 object AgentAccessibilityKeeper {
-    private const val TAG = "AgentAccessibilityKeeper"
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "agent-accessibility-keeper").apply { isDaemon = true }
     }
@@ -37,12 +37,21 @@ object AgentAccessibilityKeeper {
             AgentAccessibilityService::class.java
         ).flattenToShortString()
         val result = runProcess(buildEnableCommand(component, shortComponent))
+        val safeReason = reason.toSafeRestoreReason()
         if (result.exitCode == 0) {
-            Log.i(TAG, "restore finished, reason=$reason, stdout=${result.stdout}")
+            val outcome = when (result.stdout) {
+                "restored" -> "restored"
+                "noop" -> "noop"
+                else -> "unknown"
+            }
+            AndroidAgentLogger.info(
+                "Agent accessibility action=restore outcome=$outcome " +
+                    "reason=$safeReason exitCode=${result.exitCode} outputChars=${result.stdout.length}"
+            )
         } else {
-            Log.w(
-                TAG,
-                "restore failed, reason=$reason, exit=${result.exitCode}, stderr=${result.stderr}"
+            AndroidAgentLogger.warn(
+                "Agent accessibility action=restore outcome=failed " +
+                    "reason=$safeReason exitCode=${result.exitCode} errorChars=${result.stderr.length}"
             )
         }
     }
@@ -96,6 +105,12 @@ object AgentAccessibilityKeeper {
 
     private fun shellQuote(value: String): String =
         "'" + value.replace("'", "'\\''") + "'"
+
+    private fun String.toSafeRestoreReason(): String = when (this) {
+        Intent.ACTION_BOOT_COMPLETED -> "boot"
+        Intent.ACTION_MY_PACKAGE_REPLACED -> "package_replaced"
+        else -> "unknown"
+    }
 
     private data class ShellResult(
         val exitCode: Int,

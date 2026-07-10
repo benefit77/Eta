@@ -1,12 +1,15 @@
 package fuck.andes
 
 import io.github.libxposed.api.XposedModule
+import io.github.libxposed.api.XposedInterface.HookHandle
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
 import fuck.andes.config.Prefs
+import fuck.andes.core.HookInstallation
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.ModuleLogger
+import fuck.andes.core.safeLogType
 import fuck.andes.hook.breeno.BreenoHooks
 import fuck.andes.hook.colordirect.ColorDirectHooks
 import fuck.andes.hook.google.GoogleAppHooks
@@ -17,12 +20,9 @@ import fuck.andes.hook.system.SystemUiHooks
 class ModuleMain : XposedModule() {
 
     private val logger = ModuleLogger(this)
-    private var systemServerInstalled = false
-    private var systemUiInstalled = false
-    private var googleInstalled = false
-    private var colorDirectInstalled = false
-    private var breenoInstalled = false
     private var currentProcessName: String? = null
+    // 当前未启用热重载；保留句柄用于未来显式 unhook/replace，而不是维持 Hook 生效。
+    private val hookHandles = mutableListOf<HookHandle>()
 
     override fun onModuleLoaded(param: ModuleLoadedParam) {
         currentProcessName = param.processName
@@ -32,50 +32,62 @@ class ModuleMain : XposedModule() {
         }
         // 缓存框架提供的只读 remote preferences，供所有 hook 拦截回调即时读取。
         // getRemotePreferences 是 XposedInterface 的方法，XposedModule 继承自其 Wrapper 可直接调用。
-        // 调用失败（框架不支持 remote）时静默回退默认值（全开），不影响 hook 安装。
-        Prefs.attachRemote(runCatching { getRemotePreferences(Prefs.GROUP) }.getOrNull())
-        logger.debug(
+        // 调用失败时保留历史默认行为，但必须留下可诊断日志，不能伪装成配置同步正常。
+        val remotePreferences = try {
+            getRemotePreferences(Prefs.GROUP)
+        } catch (exception: Exception) {
+            logger.warn("RemotePreferences 不可用，将使用兼容默认值: ${exception.safeLogType()}")
+            null
+        }
+        Prefs.attachRemote(remotePreferences)
+        logger.debug {
             "模块已加载 process=${param.processName}, framework=$frameworkName($frameworkVersionCode), api=$apiVersion"
-        )
+        }
     }
 
     override fun onSystemServerStarting(param: SystemServerStartingParam) {
-        if (systemServerInstalled) return
-        systemServerInstalled = true
-        SystemServerHooks.install(this, logger, param.classLoader)
+        recordInstallation(SystemServerHooks.install(this, logger, param.classLoader))
     }
 
     override fun onPackageReady(param: PackageReadyParam) {
         when (param.packageName) {
             ModuleConfig.SYSTEM_UI_PACKAGE -> {
-                if (!systemUiInstalled && currentProcessName == ModuleConfig.SYSTEM_UI_PACKAGE) {
-                    systemUiInstalled = true
-                    SystemUiHooks.install(this, logger, param.classLoader)
+                if (currentProcessName == ModuleConfig.SYSTEM_UI_PACKAGE) {
+                    recordInstallation(SystemUiHooks.install(this, logger, param.classLoader))
                 }
             }
 
             ModuleConfig.GOOGLE_PACKAGE -> {
-                if (!googleInstalled && isCurrentPackageProcess(ModuleConfig.GOOGLE_PACKAGE)) {
-                    googleInstalled = true
-                    GoogleEligibilityHooks.install(this, logger, param.classLoader)
-                    GoogleAppHooks.install(this, logger, param.classLoader)
+                if (isCurrentPackageProcess(ModuleConfig.GOOGLE_PACKAGE)) {
+                    recordInstallation(
+                        HookInstallation.combine(
+                            group = "Google",
+                            installations = listOf(
+                                GoogleEligibilityHooks.install(this, logger, param.classLoader),
+                                GoogleAppHooks.install(this, logger, param.classLoader)
+                            )
+                        )
+                    )
                 }
             }
 
             ModuleConfig.COLOR_DIRECT_PACKAGE -> {
-                if (!colorDirectInstalled && isCurrentPackageProcess(ModuleConfig.COLOR_DIRECT_PACKAGE)) {
-                    colorDirectInstalled = true
-                    ColorDirectHooks.install(this, logger, param.classLoader)
+                if (isCurrentPackageProcess(ModuleConfig.COLOR_DIRECT_PACKAGE)) {
+                    recordInstallation(ColorDirectHooks.install(this, logger, param.classLoader))
                 }
             }
 
             ModuleConfig.BREENO_PACKAGE -> {
-                if (!breenoInstalled && isCurrentPackageProcess(ModuleConfig.BREENO_PACKAGE)) {
-                    breenoInstalled = true
-                    BreenoHooks.install(this, logger, param.classLoader)
+                if (isCurrentPackageProcess(ModuleConfig.BREENO_PACKAGE)) {
+                    recordInstallation(BreenoHooks.install(this, logger, param.classLoader))
                 }
             }
         }
+    }
+
+    private fun recordInstallation(installation: HookInstallation) {
+        hookHandles += installation.handles
+        logger.scoped(installation.report.group).info(installation.report.summary())
     }
 
     private fun isCurrentPackageProcess(packageName: String): Boolean {

@@ -1,8 +1,11 @@
 package fuck.andes.hook.system
 
 import fuck.andes.core.HookSupport
+import fuck.andes.core.HookInstallation
+import fuck.andes.core.HookRegistrar
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.ModuleLogger
+import fuck.andes.core.safeLogType
 
 import android.app.KeyguardManager
 import android.app.role.RoleManager
@@ -10,14 +13,15 @@ import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.Context
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import fuck.andes.config.Prefs
 import io.github.libxposed.api.XposedModule
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.Consumer
 
 internal object AssistantManager {
@@ -25,8 +29,16 @@ internal object AssistantManager {
     private const val SHOW_SOURCE_PUSH_TO_TALK = 1 shl 5
     private const val DEFAULT_SHOW_FLAGS = SHOW_SOURCE_PUSH_TO_TALK
     private const val CONFIG_VERIFY_COOLDOWN_MS = 15_000L
-    private const val ROLE_OPERATION_TIMEOUT_MS = 1_500L
+    // Android 37 RoleControllerManager 自身超时为 15 秒；本地 watchdog 只能晚于它做最终状态核验。
+    private const val ROLE_OPERATION_WATCHDOG_MS = 17_000L
     private const val REFRESH_COOLDOWN_MS = 5_000L
+
+    private val systemHandler by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        Handler(Looper.getMainLooper())
+    }
+
+    private val configurationLock = Any()
+    private val usersWithConfigurationInFlight = mutableSetOf<Int>()
 
     @Volatile
     private var lastForcedRefreshUptime = 0L
@@ -40,60 +52,89 @@ internal object AssistantManager {
     @Volatile
     private var voiceInteractionManagerStub: Any? = null
 
-    fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
-        val serviceClass = HookSupport.findClassOrNull(
-            classLoader,
-            ModuleConfig.VOICE_INTERACTION_MANAGER_SERVICE_CLASS
-        )
-        val onBootPhaseMethod = serviceClass?.let {
-            HookSupport.findMethod(it, "onBootPhase", Int::class.javaPrimitiveType!!)
-        }
-        if (onBootPhaseMethod == null) {
-            logger.warn("未找到 VoiceInteractionManagerService.onBootPhase(int)")
-            return
-        }
-
-        HookSupport.hookMethod(
-            module,
-            logger,
-            onBootPhaseMethod,
-            "VoiceInteractionManagerService.onBootPhase"
-        ) { chain ->
-            val phase = chain.getArg(0) as Int
-            val result = chain.proceed()
-            captureVoiceInteractionManagerStub(chain.getThisObject())
-            if (phase == BOOT_COMPLETED_PHASE) {
-                // 开关关闭则不自动校正默认助理。
-                if (!Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)) {
-                    logger.debug("AssistantManager: 自动校正已关闭，跳过 boot 校正")
-                } else {
-                    val context = HookSupport.getFieldValue(chain.getThisObject(), "mContext") as? Context
-                    if (context == null) {
-                        logger.warnThrottled(
-                            "assistant_boot_missing_context",
-                            "AssistantManager: boot completed 时无法取得 mContext"
-                        )
-                    } else {
-                        ensureGoogleAssistantConfigured(context, logger)
+    fun install(
+        module: XposedModule,
+        rootLogger: ModuleLogger,
+        classLoader: ClassLoader
+    ): HookInstallation {
+        val hooks = HookRegistrar(module, rootLogger, "AssistantManager")
+        val logger = hooks.logger
+        return hooks.install {
+            val serviceClass = HookSupport.findClassOrNull(
+                classLoader,
+                ModuleConfig.VOICE_INTERACTION_MANAGER_SERVICE_CLASS
+            )
+            val onBootPhaseMethod = serviceClass?.let {
+                HookSupport.findMethod(it, "onBootPhase", Int::class.javaPrimitiveType!!)
+            }
+            if (serviceClass == null) {
+                hooks.skipped(
+                    id = "system.assistant-boot-phase",
+                    description = "VoiceInteractionManagerService.onBootPhase",
+                    detail = "未找到 VoiceInteractionManagerService，跳过 onBootPhase Hook"
+                )
+            } else if (onBootPhaseMethod == null) {
+                hooks.missing(
+                    id = "system.assistant-boot-phase",
+                    description = "VoiceInteractionManagerService.onBootPhase",
+                    detail = "未找到 VoiceInteractionManagerService.onBootPhase(int)"
+                )
+            } else {
+                hooks.intercept(
+                    id = "system.assistant-boot-phase",
+                    executable = onBootPhaseMethod,
+                    description = "VoiceInteractionManagerService.onBootPhase"
+                ) { chain ->
+                    val phase = chain.getArg(0) as Int
+                    val result = chain.proceed()
+                    val service = chain.getThisObject()
+                    captureVoiceInteractionManagerStub(service)
+                    if (phase == BOOT_COMPLETED_PHASE) {
+                        // 开关关闭则不自动校正默认助理。
+                        if (!Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)) {
+                            logger.debug { "AssistantManager: 自动校正已关闭，跳过 boot 校正" }
+                        } else {
+                            val context = HookSupport.getFieldValue(service, "mContext") as? Context
+                            if (context == null) {
+                                logger.warnThrottled("assistant_boot_missing_context") {
+                                    "AssistantManager: boot completed 时无法取得 mContext"
+                                }
+                            } else {
+                                scheduleGoogleAssistantConfiguration(
+                                    context = context,
+                                    userId = null,
+                                    logger = logger,
+                                    handler = systemHandler,
+                                    forceRefresh = false,
+                                    rebuildWhenVerified = false,
+                                    requiredPreferenceKey = Prefs.Keys.ASSISTANT_AUTO_CONFIG
+                                )
+                            }
+                        }
                     }
+                    result
                 }
             }
-            result
-        }
 
-        hookUserLifecycleSelfHeal(module, logger, serviceClass, "onUserUnlocking", 1)
-        hookUserLifecycleSelfHeal(module, logger, serviceClass, "onUserSwitching", 2)
+            hookUserLifecycleSelfHeal(hooks, serviceClass, "onUserUnlocking", 1)
+            hookUserLifecycleSelfHeal(hooks, serviceClass, "onUserSwitching", 2)
+        }
     }
 
-    fun ensureGoogleAssistantConfigured(
+    fun scheduleGoogleAssistantRecovery(
         context: Context,
         logger: ModuleLogger,
-        forceRefresh: Boolean = false
-    ): Boolean = ensureGoogleAssistantConfiguredForUser(
+        handler: Handler,
+        forceRefresh: Boolean,
+        requiredPreferenceKey: String
+    ): Boolean = scheduleGoogleAssistantConfiguration(
         context = context,
-        userId = resolveCurrentUserId(),
+        userId = null,
         logger = logger,
-        forceRefresh = forceRefresh
+        handler = handler,
+        forceRefresh = forceRefresh,
+        rebuildWhenVerified = true,
+        requiredPreferenceKey = requiredPreferenceKey
     )
 
     fun showGoogleAssistantSession(
@@ -117,15 +158,16 @@ internal object AssistantManager {
             if (supportsLaunch && launchFromKeyguardMethod != null) {
                 return runCatching {
                     launchFromKeyguardMethod.invoke(service)
-                    logger.debug("$source: 已通过 voiceinteraction 从锁屏启动 Google")
+                    logger.debug { "$source: 已通过 voiceinteraction 从锁屏启动 Google" }
                     true
                 }.getOrElse { throwable ->
                     logShowSessionFailure(
                         logger,
                         "${source}_launch_keyguard_failed",
-                        "$source: launchVoiceAssistFromKeyguard 失败: ${throwable.message}",
                         logFailures
-                    )
+                    ) {
+                        "$source: launchVoiceAssistFromKeyguard 失败，type=${throwable.safeLogType()}"
+                    }
                     false
                 }
             }
@@ -138,9 +180,8 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "${source}_voice_service_missing_show",
-                "$source: voiceinteraction 缺少 showSessionForActiveService",
                 logFailures
-            )
+            ) { "$source: voiceinteraction 缺少 showSessionForActiveService" }
             return false
         }
 
@@ -157,17 +198,17 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "${source}_voice_service_failed",
-                "$source: 调用 showSessionForActiveService 失败: ${throwable.message}",
                 logFailures
-            )
+            ) {
+                "$source: 调用 showSessionForActiveService 失败，type=${throwable.safeLogType()}"
+            }
         }.getOrDefault(false).also { shown ->
             if (!shown) {
                 logShowSessionFailure(
                     logger,
                     "${source}_voice_service_returned_false",
-                    "$source: showSessionForActiveService 返回 false",
                     logFailures
-                )
+                ) { "$source: showSessionForActiveService 返回 false" }
             }
         }
     }
@@ -182,9 +223,8 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "assistant_stub_missing",
-                "AssistantManager: mServiceStub 尚未就绪，无法重建 voice interaction 实现",
                 logFailures
-            )
+            ) { "AssistantManager: mServiceStub 尚未就绪，无法重建 voice interaction 实现" }
             return false
         }
         val initForUserMethod = stub.javaClass.methods.firstOrNull {
@@ -197,9 +237,8 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "assistant_stub_methods_missing",
-                "AssistantManager: mServiceStub 缺少 initForUser/switchImplementationIfNeeded",
                 logFailures
-            )
+            ) { "AssistantManager: mServiceStub 缺少 initForUser/switchImplementationIfNeeded" }
             return false
         }
 
@@ -211,9 +250,10 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "assistant_stub_rebuild_failed",
-                "AssistantManager: 重建 voice interaction 实现失败: ${throwable.message}",
                 logFailures
-            )
+            ) {
+                "AssistantManager: 重建 voice interaction 实现失败，type=${throwable.safeLogType()}"
+            }
             false
         }
     }
@@ -227,9 +267,8 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "${source}_hotword_stub_missing",
-                "$source: mServiceStub 尚未就绪，无法恢复软件热词检测",
                 logFailures
-            )
+            ) { "$source: mServiceStub 尚未就绪，无法恢复软件热词检测" }
             return false
         }
 
@@ -263,71 +302,202 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "${source}_hotword_resume_failed",
-                "$source: 恢复软件热词检测失败: ${throwable.message}",
                 logFailures
-            )
+            ) { "$source: 恢复软件热词检测失败，type=${throwable.safeLogType()}" }
             false
         }
     }
 
-    private fun ensureGoogleAssistantConfiguredForUser(
+    private fun scheduleGoogleAssistantConfiguration(
+        context: Context,
+        userId: Int?,
+        logger: ModuleLogger,
+        handler: Handler,
+        forceRefresh: Boolean,
+        rebuildWhenVerified: Boolean,
+        requiredPreferenceKey: String
+    ): Boolean = handler.post {
+        try {
+            // 请求入队后开关可能已关闭，真正执行前必须重新读取 RemotePreferences。
+            if (!Prefs.isEnabled(requiredPreferenceKey)) {
+                return@post
+            }
+            val resolvedUserId = userId ?: resolveCurrentUserId()
+            configureGoogleAssistantForUser(
+                context = context,
+                userId = resolvedUserId,
+                logger = logger,
+                handler = handler,
+                forceRefresh = forceRefresh,
+                rebuildWhenVerified = rebuildWhenVerified,
+                requiredPreferenceKey = requiredPreferenceKey
+            )
+        } catch (exception: Exception) {
+            logger.errorThrottled(
+                key = "assistant_configuration_task_failed",
+                throwable = exception
+            ) { "AssistantManager: 默认助理后台任务异常" }
+        }
+    }
+
+    private fun configureGoogleAssistantForUser(
         context: Context,
         userId: Int,
         logger: ModuleLogger,
-        forceRefresh: Boolean = false
-    ): Boolean {
-        val now = SystemClock.uptimeMillis()
-        if (!forceRefresh &&
-            userId == lastVerifiedUserId &&
-            now - lastVerifiedUptime < CONFIG_VERIFY_COOLDOWN_MS
-        ) {
-            return true
+        handler: Handler,
+        forceRefresh: Boolean,
+        rebuildWhenVerified: Boolean,
+        requiredPreferenceKey: String
+    ) {
+        if (!beginConfiguration(userId)) {
+            logger.debug { "AssistantManager: 已有校正任务，跳过重复请求" }
+            return
         }
 
-        val roleOk = hasGoogleAssistantRole(context, userId)
-        val settingsOk = hasGoogleAssistantSettings(context, userId)
-        if (!forceRefresh && roleOk && settingsOk) {
-            markVerified(userId, now)
-            return true
-        }
+        try {
+            val now = SystemClock.uptimeMillis()
+            if (!forceRefresh &&
+                userId == lastVerifiedUserId &&
+                now - lastVerifiedUptime < CONFIG_VERIFY_COOLDOWN_MS
+            ) {
+                if (rebuildWhenVerified) {
+                    rebuildVoiceInteractionImplementation(
+                        logger = logger,
+                        userId = userId,
+                        force = false,
+                        logFailures = false
+                    )
+                }
+                finishConfiguration(userId)
+                return
+            }
 
-        if (forceRefresh && now - lastForcedRefreshUptime < REFRESH_COOLDOWN_MS) {
-            return roleOk && settingsOk
-        }
-        if (forceRefresh) {
-            lastForcedRefreshUptime = now
-        }
+            val roleOk = hasGoogleAssistantRole(context, userId)
+            val settingsOk = hasGoogleAssistantSettings(context, userId)
+            if (!forceRefresh && roleOk && settingsOk) {
+                markVerified(userId, now)
+                if (rebuildWhenVerified) {
+                    rebuildVoiceInteractionImplementation(
+                        logger = logger,
+                        userId = userId,
+                        force = false,
+                        logFailures = false
+                    )
+                }
+                finishConfiguration(userId)
+                return
+            }
 
-        val roleChanged = if (forceRefresh) {
-            refreshGoogleAssistantRole(context, userId, logger)
-        } else {
-            ensureGoogleAssistantRole(context, userId, logger)
-        }
-        val settingsChanged = updateGoogleAssistantSettings(context, userId, forceRefresh, logger)
-        val verified = hasGoogleAssistantRole(context, userId) && hasGoogleAssistantSettings(context, userId)
+            if (forceRefresh && now - lastForcedRefreshUptime < REFRESH_COOLDOWN_MS) {
+                if (roleOk && settingsOk) {
+                    markVerified(userId, now)
+                    if (rebuildWhenVerified) {
+                        rebuildVoiceInteractionImplementation(
+                            logger = logger,
+                            userId = userId,
+                            force = false,
+                            logFailures = false
+                        )
+                    }
+                }
+                finishConfiguration(userId)
+                return
+            }
+            if (forceRefresh) {
+                lastForcedRefreshUptime = now
+                // 先做一次无等待重建，角色核验完成后仍会按最终状态再次确认。
+                rebuildVoiceInteractionImplementation(
+                    logger = logger,
+                    userId = userId,
+                    force = true,
+                    logFailures = false
+                )
+            }
 
-        if (verified) {
-            markVerified(userId, now)
-            if (roleChanged || settingsChanged || forceRefresh) {
+            val onRoleMutationFinished: (Boolean) -> Unit = { roleChanged ->
+                completeGoogleAssistantConfiguration(
+                    context = context,
+                    userId = userId,
+                    logger = logger,
+                    forceRefresh = forceRefresh,
+                    rebuildWhenVerified = rebuildWhenVerified,
+                    roleChanged = roleChanged,
+                    requiredPreferenceKey = requiredPreferenceKey
+                )
+            }
+
+            if (!roleOk) {
+                addGoogleAssistantRoleAsync(
+                    context = context,
+                    userId = userId,
+                    logger = logger,
+                    handler = handler,
+                    onFinished = onRoleMutationFinished
+                )
+            } else {
+                onRoleMutationFinished(false)
+            }
+        } catch (exception: Exception) {
+            finishConfiguration(userId)
+            logger.warnThrottled("assistant_configuration_start_failed") {
+                "AssistantManager: 启动默认助理校正失败，type=${exception.safeLogType()}"
+            }
+        }
+    }
+
+    private fun completeGoogleAssistantConfiguration(
+        context: Context,
+        userId: Int,
+        logger: ModuleLogger,
+        forceRefresh: Boolean,
+        rebuildWhenVerified: Boolean,
+        roleChanged: Boolean,
+        requiredPreferenceKey: String
+    ) {
+        try {
+            // RoleManager 请求无法取消；回调到达时若功能已关闭，只收尾状态，不再写设置或重建服务。
+            if (!Prefs.isEnabled(requiredPreferenceKey)) {
+                invalidateVerificationCache()
+                return
+            }
+            val settingsChanged = updateGoogleAssistantSettings(
+                context = context,
+                userId = userId,
+                forceRefresh = forceRefresh,
+                logger = logger
+            )
+            val verified = hasGoogleAssistantRole(context, userId) &&
+                hasGoogleAssistantSettings(context, userId)
+
+            if (!verified) {
+                invalidateVerificationCache()
+                return
+            }
+
+            markVerified(userId, SystemClock.uptimeMillis())
+            if (roleChanged || settingsChanged || forceRefresh || rebuildWhenVerified) {
                 rebuildVoiceInteractionImplementation(
                     logger = logger,
                     userId = userId,
                     force = forceRefresh || roleChanged || settingsChanged,
                     logFailures = false
                 )
-                logger.debug(
+                logger.debug {
                     if (forceRefresh) {
                         "AssistantManager: 已刷新 Google 默认助理绑定"
                     } else {
                         "AssistantManager: 已校正 Google 默认助理绑定"
                     }
-                )
+                }
             }
-        } else {
+        } catch (exception: Exception) {
             invalidateVerificationCache()
+            logger.warnThrottled("assistant_configuration_complete_failed") {
+                "AssistantManager: 完成默认助理校正失败，type=${exception.safeLogType()}"
+            }
+        } finally {
+            finishConfiguration(userId)
         }
-
-        return verified
     }
 
     private fun resolveVoiceInteractionService(
@@ -344,9 +514,8 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "${source}_voice_service_missing",
-                "$source: 无法取得 voiceinteraction binder",
                 logFailures
-            )
+            ) { "$source: 无法取得 voiceinteraction binder" }
             return null
         }
 
@@ -358,102 +527,113 @@ internal object AssistantManager {
             logShowSessionFailure(
                 logger,
                 "${source}_voice_service_as_interface_failed",
-                "$source: 解析 IVoiceInteractionManagerService 失败: ${throwable.message}",
                 logFailures
-            )
+            ) {
+                "$source: 解析 IVoiceInteractionManagerService 失败，type=${throwable.safeLogType()}"
+            }
             null
         }
     }
 
-    private fun ensureGoogleAssistantRole(
+    private fun addGoogleAssistantRoleAsync(
         context: Context,
         userId: Int,
-        logger: ModuleLogger
-    ): Boolean {
-        if (hasGoogleAssistantRole(context, userId)) {
-            return false
-        }
-        return mutateRoleHolders(
-            context,
-            userId,
-            "addRoleHolderAsUser",
-            arrayOf(
+        logger: ModuleLogger,
+        handler: Handler,
+        onFinished: (Boolean) -> Unit
+    ) {
+        mutateRoleHoldersAsync(
+            context = context,
+            userId = userId,
+            methodName = "addRoleHolderAsUser",
+            baseArgs = arrayOf(
                 ModuleConfig.ASSISTANT_ROLE,
                 ModuleConfig.GOOGLE_PACKAGE,
                 0,
                 resolveUserHandle(userId)
             ),
-            logger
+            logger = logger,
+            handler = handler,
+            onFinished = onFinished
         )
     }
 
-    private fun refreshGoogleAssistantRole(
-        context: Context,
-        userId: Int,
-        logger: ModuleLogger
-    ): Boolean {
-        val cleared = mutateRoleHolders(
-            context,
-            userId,
-            "clearRoleHoldersAsUser",
-            arrayOf(ModuleConfig.ASSISTANT_ROLE, 0, resolveUserHandle(userId)),
-            logger
-        )
-        val added = mutateRoleHolders(
-            context,
-            userId,
-            "addRoleHolderAsUser",
-            arrayOf(
-                ModuleConfig.ASSISTANT_ROLE,
-                ModuleConfig.GOOGLE_PACKAGE,
-                0,
-                resolveUserHandle(userId)
-            ),
-            logger
-        )
-        return cleared || added
-    }
-
-    private fun mutateRoleHolders(
+    private fun mutateRoleHoldersAsync(
         context: Context,
         userId: Int,
         methodName: String,
         baseArgs: Array<Any>,
-        logger: ModuleLogger
-    ): Boolean {
-        val roleManager = context.getSystemService(RoleManager::class.java) ?: return false
+        logger: ModuleLogger,
+        handler: Handler,
+        onFinished: (Boolean) -> Unit
+    ) {
+        val roleManager = context.getSystemService(RoleManager::class.java)
+        if (roleManager == null) {
+            onFinished(false)
+            return
+        }
         val method = roleManager.javaClass.methods.firstOrNull {
             it.name == methodName && it.parameterTypes.size == baseArgs.size + 2
         } ?: run {
-            logger.warnThrottled(
-                "assistant_role_method_$methodName",
+            logger.warnThrottled("assistant_role_method_$methodName") {
                 "AssistantManager: RoleManager 缺少 $methodName"
-            )
-            return false
+            }
+            onFinished(false)
+            return
         }
 
-        val latch = CountDownLatch(1)
-        var success = false
-        val executor = Executor { runnable -> runnable.run() }
+        val completed = AtomicBoolean(false)
+        lateinit var timeout: Runnable
+        val complete: (Boolean) -> Unit = { success ->
+            if (completed.compareAndSet(false, true)) {
+                handler.removeCallbacks(timeout)
+                try {
+                    onFinished(success)
+                } catch (exception: Exception) {
+                    invalidateVerificationCache()
+                    finishConfiguration(userId)
+                    logger.errorThrottled(
+                        key = "assistant_role_completion_${methodName}_$userId",
+                        throwable = exception
+                    ) { "AssistantManager: $methodName 完成回调异常" }
+                }
+            }
+        }
+        timeout = Runnable {
+            logger.warnThrottled("assistant_role_timeout_${methodName}_$userId") {
+                "AssistantManager: $methodName 回调超过框架超时，核验最终角色状态"
+            }
+            complete(hasGoogleAssistantRole(context, userId))
+        }
+        val executor = Executor { runnable ->
+            if (!handler.post(runnable)) {
+                logger.warnThrottled("assistant_role_callback_rejected_${methodName}_$userId") {
+                    "AssistantManager: $methodName 回调无法投递到系统 Handler"
+                }
+                runnable.run()
+            }
+        }
         val callback = Consumer<Boolean> { result ->
-            success = result == true
-            latch.countDown()
+            complete(result == true)
         }
 
-        return runCatching {
+        try {
             val args = arrayOfNulls<Any>(baseArgs.size + 2)
             baseArgs.copyInto(args, endIndex = baseArgs.size)
             args[baseArgs.size] = executor
             args[baseArgs.size + 1] = callback
             method.invoke(roleManager, *args)
-            latch.await(ROLE_OPERATION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            success
-        }.getOrElse { throwable ->
-            logger.warnThrottled(
-                "assistant_role_mutation_$methodName",
-                "AssistantManager: $methodName 失败: ${throwable.message}"
-            )
-            false
+            if (!handler.postDelayed(timeout, ROLE_OPERATION_WATCHDOG_MS)) {
+                logger.warnThrottled("assistant_role_timeout_rejected_${methodName}_$userId") {
+                    "AssistantManager: $methodName 超时兜底无法投递到系统 Handler"
+                }
+                complete(hasGoogleAssistantRole(context, userId))
+            }
+        } catch (exception: Exception) {
+            logger.warnThrottled("assistant_role_mutation_$methodName") {
+                "AssistantManager: $methodName 失败，type=${exception.safeLogType()}"
+            }
+            complete(false)
         }
     }
 
@@ -480,7 +660,7 @@ internal object AssistantManager {
             forceRefresh
         ) || changed
         if (changed) {
-            logger.debug("AssistantManager: 已写入 Google 助理 secure 配置")
+            logger.debug { "AssistantManager: 已写入 Google 助理 secure 配置" }
         }
         return changed
     }
@@ -581,49 +761,58 @@ internal object AssistantManager {
         }.getOrDefault(0)
 
     private fun hookUserLifecycleSelfHeal(
-        module: XposedModule,
-        logger: ModuleLogger,
+        hooks: HookRegistrar,
         serviceClass: Class<*>?,
         methodName: String,
         parameterCount: Int
     ) {
-        val method = serviceClass?.methods?.firstOrNull {
+        val logger = hooks.logger
+        if (serviceClass == null) {
+            hooks.skipped(
+                id = "system.assistant-${methodName.removePrefix("on").lowercase()}",
+                description = "VoiceInteractionManagerService.$methodName",
+                detail = "未找到 VoiceInteractionManagerService，跳过 $methodName Hook"
+            )
+            return
+        }
+        val method = HookSupport.findPublicMethod(serviceClass) {
             it.name == methodName && it.parameterTypes.size == parameterCount
         }
         if (method == null) {
-            logger.debug("AssistantManager: 未找到 $methodName($parameterCount)")
+            hooks.missing(
+                id = "system.assistant-${methodName.removePrefix("on").lowercase()}",
+                description = "VoiceInteractionManagerService.$methodName",
+                detail = "未找到 VoiceInteractionManagerService.$methodName/$parameterCount"
+            )
             return
         }
 
-        HookSupport.hookMethod(
-            module,
-            logger,
-            method,
-            "VoiceInteractionManagerService.$methodName"
+        hooks.intercept(
+            id = "system.assistant-${methodName.removePrefix("on").lowercase()}",
+            executable = method,
+            description = "VoiceInteractionManagerService.$methodName"
         ) { chain ->
+            val targetUserId = when (methodName) {
+                "onUserSwitching" -> resolveTargetUserId(chain.getArg(1))
+                else -> resolveTargetUserId(chain.getArg(0))
+            }
             val result = chain.proceed()
-            captureVoiceInteractionManagerStub(chain.getThisObject())
+            val service = chain.getThisObject()
+            captureVoiceInteractionManagerStub(service)
             // 开关关闭则不自动校正默认助理。
             if (!Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)) {
-                return@hookMethod result
+                return@intercept result
             }
-            val context = HookSupport.getFieldValue(chain.getThisObject(), "mContext") as? Context
+            val context = HookSupport.getFieldValue(service, "mContext") as? Context
             if (context != null) {
-                val userId = when (methodName) {
-                    "onUserSwitching" -> resolveTargetUserId(chain.getArg(1))
-                    else -> resolveTargetUserId(chain.getArg(0))
-                } ?: resolveCurrentUserId()
-                ensureGoogleAssistantConfiguredForUser(
+                scheduleGoogleAssistantConfiguration(
                     context = context,
-                    userId = userId,
+                    userId = targetUserId,
                     logger = logger,
-                    forceRefresh = false
-                )
-                rebuildVoiceInteractionImplementation(
-                    logger = logger,
-                    userId = userId,
-                    force = false,
-                    logFailures = false
+                    handler = systemHandler,
+                    forceRefresh = false,
+                    rebuildWhenVerified = true,
+                    requiredPreferenceKey = Prefs.Keys.ASSISTANT_AUTO_CONFIG
                 )
             }
             result
@@ -664,6 +853,16 @@ internal object AssistantManager {
         return null
     }
 
+    private fun beginConfiguration(userId: Int): Boolean = synchronized(configurationLock) {
+        usersWithConfigurationInFlight.add(userId)
+    }
+
+    private fun finishConfiguration(userId: Int) {
+        synchronized(configurationLock) {
+            usersWithConfigurationInFlight.remove(userId)
+        }
+    }
+
     private fun markVerified(userId: Int, now: Long) {
         lastVerifiedUserId = userId
         lastVerifiedUptime = now
@@ -677,11 +876,11 @@ internal object AssistantManager {
     private fun logShowSessionFailure(
         logger: ModuleLogger,
         key: String,
-        message: String,
-        logFailures: Boolean
+        logFailures: Boolean,
+        message: () -> String
     ) {
         if (!logFailures) return
-        logger.warnThrottled(key, message)
+        logger.warnThrottled(key, message = message)
     }
 
     private fun isKeyguardLocked(context: Context): Boolean =

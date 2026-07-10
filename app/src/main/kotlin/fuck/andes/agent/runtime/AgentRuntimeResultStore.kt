@@ -15,31 +15,65 @@ import kotlinx.coroutines.runBlocking
 internal object AgentRuntimeResultStore {
     private const val MAX_PENDING = 8
     private const val MAX_AGE_MS = 12L * 60L * 60L * 1000L
+    private const val MAX_RECENT_ACKNOWLEDGEMENTS = 32
 
-    fun add(context: Context, completedRun: AgentRuntimeWire.CompletedRun) {
+    private val deliveryLock = Any()
+    private val recentlyAcknowledgedRunIds = LinkedHashMap<String, Long>()
+
+    /**
+     * 返回 false 表示同一 run 已先收到 ACK，不应在 ACK 之后重新写回待交付队列。
+     */
+    fun add(context: Context, completedRun: AgentRuntimeWire.CompletedRun): Boolean {
         val appContext = context.applicationContext
-        runBlocking(Dispatchers.IO) {
-            val dao = FuckAndesDatabase.get(appContext).runtimeRunDao()
-            dao.upsertRuntimeResult(completedRun.toEntity())
-            prune(dao)
+        val entity = completedRun.toEntity()
+        synchronized(deliveryLock) {
+            pruneAcknowledgements(System.currentTimeMillis())
+            if (recentlyAcknowledgedRunIds.containsKey(entity.runId)) return false
+            runBlocking(Dispatchers.IO) {
+                val dao = FuckAndesDatabase.get(appContext).runtimeRunDao()
+                dao.upsertRuntimeResult(entity)
+                prune(dao)
+            }
+            return true
         }
     }
 
     fun list(context: Context): List<AgentRuntimeWire.CompletedRun> {
         val appContext = context.applicationContext
-        return runBlocking(Dispatchers.IO) {
-            prune(FuckAndesDatabase.get(appContext).runtimeRunDao())
-                .map { it.toDomain() }
+        return synchronized(deliveryLock) {
+            runBlocking(Dispatchers.IO) {
+                prune(FuckAndesDatabase.get(appContext).runtimeRunDao())
+                    .map { it.toDomain() }
+            }
         }
     }
 
     fun remove(context: Context, runId: String) {
         if (runId.isBlank()) return
         val appContext = context.applicationContext
-        runBlocking(Dispatchers.IO) {
-            FuckAndesDatabase.get(appContext)
-                .runtimeRunDao()
-                .deleteRuntimeResult(runId)
+        synchronized(deliveryLock) {
+            runBlocking(Dispatchers.IO) {
+                FuckAndesDatabase.get(appContext)
+                    .runtimeRunDao()
+                    .deleteRuntimeResult(runId)
+            }
+            rememberAcknowledgement(runId, System.currentTimeMillis())
+        }
+    }
+
+    private fun rememberAcknowledgement(runId: String, now: Long) {
+        pruneAcknowledgements(now)
+        recentlyAcknowledgedRunIds.remove(runId)
+        while (recentlyAcknowledgedRunIds.size >= MAX_RECENT_ACKNOWLEDGEMENTS) {
+            val oldestRunId = recentlyAcknowledgedRunIds.keys.firstOrNull() ?: break
+            recentlyAcknowledgedRunIds.remove(oldestRunId)
+        }
+        recentlyAcknowledgedRunIds[runId] = now
+    }
+
+    private fun pruneAcknowledgements(now: Long) {
+        recentlyAcknowledgedRunIds.entries.removeAll { (_, acknowledgedAt) ->
+            now - acknowledgedAt > MAX_AGE_MS
         }
     }
 

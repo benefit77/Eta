@@ -1,8 +1,11 @@
 package fuck.andes.hook.google
 
 import fuck.andes.core.HookSupport
+import fuck.andes.core.HookInstallation
+import fuck.andes.core.HookRegistrar
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.ModuleLogger
+import fuck.andes.core.safeLogType
 
 import android.app.Activity
 import android.app.KeyguardManager
@@ -25,25 +28,32 @@ internal object GoogleAppHooks {
     private val voiceCommandAttemptLock = Any()
     private val voiceCommandAttempts = WeakHashMap<Activity, Long>()
 
-    @Suppress("UNUSED_PARAMETER")
-    fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
-        // 机型伪装：在 Google 进程内伪装为 Samsung S24 Ultra，以放开一圈即搜能力。
-        // Build 字段是启动时一次性写入的副作用，作为一圈即搜的底层依赖始终执行。
-        setBuildField(logger, Build::class.java, "MANUFACTURER", ModuleConfig.SPOOF_MANUFACTURER)
-        setBuildField(logger, Build::class.java, "BRAND", ModuleConfig.SPOOF_BRAND)
-        setBuildField(logger, Build::class.java, "MODEL", ModuleConfig.SPOOF_MODEL)
-        setBuildField(logger, Build::class.java, "PRODUCT", ModuleConfig.SPOOF_PRODUCT)
-        setBuildField(logger, Build::class.java, "DEVICE", ModuleConfig.SPOOF_DEVICE)
+    fun install(
+        module: XposedModule,
+        rootLogger: ModuleLogger,
+        classLoader: ClassLoader
+    ): HookInstallation {
+        val hooks = HookRegistrar(module, rootLogger, "GoogleApp")
+        val logger = hooks.logger
+        return hooks.install {
+            // 机型伪装：在 Google 进程内伪装为 Samsung S24 Ultra，以放开一圈即搜能力。
+            // Build 字段是启动时一次性写入的副作用，作为一圈即搜的底层依赖始终执行。
+            setBuildField(logger, Build::class.java, "MANUFACTURER", ModuleConfig.SPOOF_MANUFACTURER)
+            setBuildField(logger, Build::class.java, "BRAND", ModuleConfig.SPOOF_BRAND)
+            setBuildField(logger, Build::class.java, "MODEL", ModuleConfig.SPOOF_MODEL)
+            setBuildField(logger, Build::class.java, "PRODUCT", ModuleConfig.SPOOF_PRODUCT)
+            setBuildField(logger, Build::class.java, "DEVICE", ModuleConfig.SPOOF_DEVICE)
 
-        // 锁屏/亮屏补语音输入：开关在拦截回调里即时判断。
-        hookFloatyVoiceCommand(module, logger, classLoader)
+            // 锁屏/亮屏补语音输入：开关在拦截回调里即时判断。
+            hookFloatyVoiceCommand(hooks, classLoader)
+        }
     }
 
     private fun hookFloatyVoiceCommand(
-        module: XposedModule,
-        logger: ModuleLogger,
+        hooks: HookRegistrar,
         classLoader: ClassLoader
     ) {
+        val logger = hooks.logger
         val floatyOnResumeMethod = HookSupport.findClassOrNull(classLoader, FLOATY_ACTIVITY_CLASS)
             ?.let { clazz ->
                 runCatching {
@@ -51,11 +61,10 @@ internal object GoogleAppHooks {
                 }.getOrNull()
             }
         if (floatyOnResumeMethod != null) {
-            HookSupport.hookMethod(
-                module,
-                logger,
-                floatyOnResumeMethod,
-                "FloatyActivity.onResume(Google voice command)"
+            hooks.intercept(
+                id = "google.floaty-on-resume",
+                executable = floatyOnResumeMethod,
+                description = "FloatyActivity.onResume(Google voice command)"
             ) { chain ->
                 val result = chain.proceed()
                 val activity = chain.getThisObject() as? Activity
@@ -69,15 +78,18 @@ internal object GoogleAppHooks {
 
         val onResumeMethod = HookSupport.findMethod(Activity::class.java, "onResume")
         if (onResumeMethod == null) {
-            logger.warn("GSA: 未找到 Activity.onResume()，跳过 Gemini 锁屏/亮屏语音补偿")
+            hooks.missing(
+                id = "google.floaty-on-resume",
+                description = "FloatyActivity.onResume(Google voice command)",
+                detail = "未找到 FloatyActivity/Activity.onResume()，跳过 Gemini 语音补偿"
+            )
             return
         }
 
-        HookSupport.hookMethod(
-            module,
-            logger,
-            onResumeMethod,
-            "Activity.onResume(Google Floaty voice command)"
+        hooks.intercept(
+            id = "google.floaty-on-resume",
+            executable = onResumeMethod,
+            description = "Activity.onResume(Google Floaty voice command)"
         ) { chain ->
             val result = chain.proceed()
             val activity = chain.getThisObject() as? Activity
@@ -124,13 +136,13 @@ internal object GoogleAppHooks {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                 )
-                logger.debug("GSA: 已为${scenario} Gemini 浮窗补发 ACTION_VOICE_COMMAND")
+                logger.debug { "GSA: 已为${scenario} Gemini 浮窗补发 ACTION_VOICE_COMMAND" }
             }.onFailure { throwable ->
                 clearVoiceCommandAttempt(activity)
-                logger.warnThrottled(
-                    "gsa_floaty_voice_command_failed",
-                    "GSA: ${scenario} Gemini 浮窗补发 ACTION_VOICE_COMMAND 失败: ${throwable.message}"
-                )
+                logger.warnThrottled("gsa_floaty_voice_command_failed") {
+                    "GSA: ${scenario} Gemini 浮窗补发 ACTION_VOICE_COMMAND 失败，" +
+                        "type=${throwable.safeLogType()}"
+                }
             }
         }, VOICE_COMMAND_DELAY_MS)
     }
@@ -167,7 +179,7 @@ internal object GoogleAppHooks {
         val field = runCatching {
             clazz.getDeclaredField(fieldName).apply { isAccessible = true }
         }.getOrElse { throwable ->
-            logger.error("GSA: 找不到 Build.$fieldName", throwable)
+            logger.warn("GSA: 找不到 Build.$fieldName，type=${throwable.safeLogType()}")
             return
         }
 
@@ -189,7 +201,7 @@ internal object GoogleAppHooks {
                 Any::class.java
             ).invoke(theUnsafe, base, offset, value)
         }.onFailure { throwable ->
-            logger.error("GSA: 修改 Build.$fieldName 失败", throwable)
+            logger.warn("GSA: 修改 Build.$fieldName 失败，type=${throwable.safeLogType()}")
         }
     }
 }

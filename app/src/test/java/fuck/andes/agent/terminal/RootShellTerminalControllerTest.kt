@@ -121,10 +121,60 @@ class RootShellTerminalControllerTest {
         }
     }
 
+    @Test
+    fun terminalLogsDoNotContainCommandOrWorkingDirectory() {
+        val logger = RecordingLogger()
+        val controller = RootShellTerminalController(logger)
+        val cwd = temporaryFolder.newFolder("sensitive_cwd_marker").absolutePath
+        val command = "printf sensitive_command_marker"
+
+        try {
+            val result = JSONObject(
+                controller.terminalOpenAndExec(
+                    command = command,
+                    cwd = cwd,
+                    timeoutMs = 5_000,
+                    identity = "user",
+                    mergeStderr = false
+                )
+            )
+
+            assertTrue(result.toString(), result.getBoolean("ok"))
+            val logs = logger.messages.joinToString("\n")
+            assertTrue(logs, logs.contains("action=open_and_exec"))
+            assertTrue(logs, logs.contains("commandChars=${command.length}"))
+            assertFalse(logs, logs.contains("sensitive_command_marker"))
+            assertFalse(logs, logs.contains("sensitive_cwd_marker"))
+            assertFalse(logs, logs.contains(cwd))
+        } finally {
+            controller.closeAll()
+        }
+    }
+
     private object NoopLogger : AgentLogger {
-        override fun debug(message: String) = Unit
+        override fun debug(message: () -> String) = Unit
         override fun info(message: String) = Unit
         override fun warn(message: String) = Unit
         override fun error(message: String, throwable: Throwable?) = Unit
+    }
+
+    private class RecordingLogger : AgentLogger {
+        val messages = mutableListOf<String>()
+
+        override fun debug(message: () -> String) {
+            messages += message()
+        }
+
+        override fun info(message: String) {
+            messages += message
+        }
+
+        override fun warn(message: String) {
+            messages += message
+        }
+
+        override fun error(message: String, throwable: Throwable?) {
+            messages += message
+        }
     }
 }

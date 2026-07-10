@@ -3,7 +3,8 @@ package fuck.andes.systemizer
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.util.Log
+import fuck.andes.core.AndroidAgentLogger
+import fuck.andes.core.safeLogType
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -79,16 +80,26 @@ internal class GoogleAppSystemizerInstaller(
     private fun installModule(rootManager: RootManager): SystemizerInstallResult {
         val moduleZip = runCatching { copyModuleAssetToCache() }
             .getOrElse {
-                Log.w(TAG, "Prepare Google App systemizer module failed", it)
+                AndroidAgentLogger.error(
+                    "Google App systemizer action=prepare outcome=failed " +
+                        "errorType=${it.safeLogType()}"
+                )
                 return SystemizerInstallResult.Failed("模块资源准备失败")
             }
 
         val command = buildInstallCommand(rootManager, moduleZip.absolutePath)
         val result = runSu(command, timeoutSeconds = 120)
-        Log.i(TAG, "Google App systemizer install exit=${result.exitCode}, output=${result.output.take(512)}")
         return if (result.exitCode == 0) {
+            AndroidAgentLogger.info(
+                "Google App systemizer action=install outcome=succeeded " +
+                    "rootManager=$rootManager exitCode=${result.exitCode} outputChars=${result.output.length}"
+            )
             SystemizerInstallResult.InstalledRebootRequired(rootManager)
         } else {
+            AndroidAgentLogger.error(
+                "Google App systemizer action=install outcome=failed " +
+                    "rootManager=$rootManager exitCode=${result.exitCode} outputChars=${result.output.length}"
+            )
             SystemizerInstallResult.Failed(
                 message = "模块安装失败",
                 commandOutput = result.output.takeLast(1200),
@@ -165,7 +176,6 @@ internal class GoogleAppSystemizerInstaller(
     }
 
     companion object {
-        private const val TAG = "FuckAndesSystemizer"
         private const val GOOGLE_PACKAGE = "com.google.android.googlequicksearchbox"
         private const val MODULE_ASSET_NAME = "googlequicksearchbox-systemizer.zip"
         private const val KERNEL_SU_METAMODULE_PATH = "/data/adb/metamodule"

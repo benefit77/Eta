@@ -41,6 +41,7 @@ import fuck.andes.agent.skill.SkillRuntime
 import fuck.andes.agent.tool.AgentLocalTools
 import fuck.andes.core.AndroidAgentLogger
 import fuck.andes.core.ModuleConfig
+import fuck.andes.core.safeLogType
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.UUID
 import kotlin.concurrent.thread
@@ -111,7 +112,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     override fun onUnbind(intent: Intent?): Boolean {
         if (activeRunController != null) {
-            AndroidAgentLogger.warn("Agent runtime: client unbound while run is active, keeping detached run")
+            AndroidAgentLogger.debug {
+                "Agent runtime client unbound while run is active; detached run continues"
+            }
         }
         clientMessenger = null
         return false
@@ -148,7 +151,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     val request = runCatching {
                         AgentRuntimeWire.runRequestFromBundle(msg.data ?: return)
                     }.getOrElse { throwable ->
-                        finishWithFailure(throwable.message ?: throwable.javaClass.simpleName)
+                        AndroidAgentLogger.warnThrottled("runtime_invalid_start_request") {
+                            "Agent runtime rejected invalid start request: type=${throwable.safeLogType()}"
+                        }
+                        finishWithFailure("Agent Runtime 请求格式无效")
                         return
                     }
                     startRun(request)
@@ -198,7 +204,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         runCatching {
             startService(Intent(this, AgentRuntimeService::class.java).setAction(ACTION_KEEP_ALIVE))
         }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime keep-alive start failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+            AndroidAgentLogger.warnThrottled("runtime_keep_alive_start_failed") {
+                "Agent runtime keep-alive start failed: type=${throwable.safeLogType()}"
+            }
         }
         mainHandler.removeCallbacksAndMessages(hideToken)
         state.value = AgentOverlayState.Initial
@@ -243,7 +251,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         skillContext = skillContext
                     ) { event ->
                         if (activeRunController == runController) {
-                            AndroidAgentLogger.debug("Agent runtime event: ${event.toLogLine()}")
+                            AndroidAgentLogger.debug { "Agent runtime event: ${event.toLogLine()}" }
                             archivedEvents += event
                             sendEvent(event)
                             val revealsForegroundOperation =
@@ -279,7 +287,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         transcript = response.transcript,
                     )
                     val persistRequest = request.withActiveSupplements()
-                    persistCompletedRun(persistRequest, result)
+                    if (!persistCompletedRunIfCurrent(runController, persistRequest, result)) {
+                        throw AgentRunCancelledException()
+                    }
                     persistArchivedRun(persistRequest, result, archivedEvents)
                     if (activeRunController == runController) {
                         sendResult(result)
@@ -303,12 +313,20 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         )
                     }
                 }.getOrElse { throwable ->
-                    val message = if (throwable is AgentRunCancelledException) {
+                    // 资源取消可能表现为 IOException 等目标异常，不能只依赖异常类型判断控制流。
+                    val cancelled = runController.isCancelled || throwable is AgentRunCancelledException
+                    val message = if (cancelled) {
                         "已停止"
                     } else {
                         throwable.message ?: throwable.javaClass.simpleName
                     }
-                    AndroidAgentLogger.error("Agent runtime failed: $message", throwable)
+                    if (cancelled) {
+                        AndroidAgentLogger.info("Agent runtime stopped")
+                    } else {
+                        AndroidAgentLogger.error(
+                            "Agent runtime failed: type=${throwable.safeLogType()}"
+                        )
+                    }
                     if (activeRunController == runController) {
                         val event = AgentEvent.RunFailed(message)
                         archivedEvents += event
@@ -321,9 +339,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         error = message
                     )
                     val persistRequest = request.withActiveSupplements()
-                    persistCompletedRun(persistRequest, result)
+                    // 取消是控制流，不是等待入口进程消费的完成结果；持久化后会在入口重启时误投递。
+                    val deliverResult = !cancelled &&
+                        persistCompletedRunIfCurrent(runController, persistRequest, result)
                     persistArchivedRun(persistRequest, result, archivedEvents)
-                    if (activeRunController == runController) {
+                    if (deliverResult && activeRunController == runController) {
                         sendResult(result)
                     }
                     mainHandler.post {
@@ -348,21 +368,23 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun dismissEntrySurfaceForForegroundOperation(request: AgentRuntimeWire.RunRequest) {
-        val handoff = request.handoff ?: return
+        if (request.handoff == null) return
         val service = AgentAccessibilityService.current()
         if (service == null) {
-            AndroidAgentLogger.warn(
-                "Agent runtime: entry surface dismiss skipped, accessibility service unavailable, " +
-                    "source=${handoff.source}, runId=${request.runId}"
-            )
+            AndroidAgentLogger.warnThrottled("runtime_entry_surface_accessibility_unavailable") {
+                "Agent runtime entry surface dismiss skipped: accessibility service unavailable"
+            }
             return
         }
         val dismissed = service.globalAction("BACK")
-        val message = "source=${handoff.source}, runId=${request.runId}"
         if (dismissed) {
-            AndroidAgentLogger.info("Agent runtime: entry surface dismissed before foreground operation, $message")
+            AndroidAgentLogger.debug {
+                "Agent runtime entry surface dismissed before foreground operation"
+            }
         } else {
-            AndroidAgentLogger.warn("Agent runtime: entry surface dismiss failed before foreground operation, $message")
+            AndroidAgentLogger.warnThrottled("runtime_entry_surface_dismiss_failed") {
+                "Agent runtime entry surface dismiss failed before foreground operation"
+            }
         }
     }
 
@@ -371,6 +393,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_EVENT)
             msg.data = AgentRuntimeWire.eventToBundle(event)
             clientMessenger?.send(msg)
+        }.onFailure { throwable ->
+            AndroidAgentLogger.warnThrottled("runtime_event_delivery_failed") {
+                "Agent runtime event delivery failed: type=${throwable.safeLogType()}"
+            }
         }
     }
 
@@ -379,6 +405,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_RESULT)
             msg.data = AgentRuntimeWire.toBundle(result)
             clientMessenger?.send(msg)
+        }.onFailure { throwable ->
+            AndroidAgentLogger.warnThrottled("runtime_result_delivery_failed") {
+                "Agent runtime result delivery failed: type=${throwable.safeLogType()}"
+            }
         }
     }
 
@@ -390,16 +420,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             )
             replyTo?.send(msg)
         }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime drain results failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+            AndroidAgentLogger.warnThrottled("runtime_drain_results_failed") {
+                "Agent runtime drain results failed: type=${throwable.safeLogType()}"
+            }
         }
     }
 
     private fun persistCompletedRun(
         request: AgentRuntimeWire.RunRequest,
         result: AgentRuntimeWire.RunResult
-    ) {
-        val handoff = request.handoff ?: return
-        AgentRuntimeResultStore.add(
+    ): Boolean {
+        val handoff = request.handoff ?: return true
+        return AgentRuntimeResultStore.add(
             this,
             AgentRuntimeWire.CompletedRun(
                 handoff = handoff,
@@ -407,6 +439,33 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 createdAt = System.currentTimeMillis()
             )
         )
+    }
+
+    private fun ensureRunCanComplete(runController: AgentRunController) {
+        if (runController.isCancelled || activeRunController !== runController) {
+            throw AgentRunCancelledException()
+        }
+    }
+
+    private fun persistCompletedRunIfCurrent(
+        runController: AgentRunController,
+        request: AgentRuntimeWire.RunRequest,
+        result: AgentRuntimeWire.RunResult,
+    ): Boolean {
+        try {
+            ensureRunCanComplete(runController)
+        } catch (_: AgentRunCancelledException) {
+            return false
+        }
+        if (!persistCompletedRun(request, result)) return false
+        return try {
+            ensureRunCanComplete(runController)
+            true
+        } catch (_: AgentRunCancelledException) {
+            val stableRunId = result.runId.ifBlank { request.handoff?.id.orEmpty() }
+            AgentRuntimeResultStore.remove(this, stableRunId)
+            false
+        }
     }
 
     private fun persistArchivedRun(
@@ -449,7 +508,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun cancelRun(runId: String) {
         val activeId = activeRunId
         if (runId.isNotBlank() && activeId != null && runId != activeId) {
-            AndroidAgentLogger.info("Agent runtime: ignore stale cancel, requested=$runId, active=$activeId")
+            AndroidAgentLogger.debug { "Agent runtime ignored stale cancel request" }
             return
         }
         activeRunController?.cancel()
@@ -532,7 +591,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         val glowLp = glowLayoutParams()
         runCatching { wm.addView(glow, glowLp) }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime glow addView failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+            AndroidAgentLogger.warnThrottled("runtime_glow_add_view_failed") {
+                "Agent runtime glow addView failed: type=${throwable.safeLogType()}"
+            }
         }
         glowView = glow
         glowParams = glowLp
@@ -552,7 +613,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         val orbLp = orbLayoutParams()
         runCatching { wm.addView(orb, orbLp) }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime orb addView failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+            AndroidAgentLogger.warnThrottled("runtime_orb_add_view_failed") {
+                "Agent runtime orb addView failed: type=${throwable.safeLogType()}"
+            }
             return
         }
         orbView = orb
@@ -598,7 +661,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         val lp = bubbleLayoutParams()
         runCatching { wm.addView(bubble, lp) }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime bubble addView failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+            AndroidAgentLogger.warnThrottled("runtime_bubble_add_view_failed") {
+                "Agent runtime bubble addView failed: type=${throwable.safeLogType()}"
+            }
             return
         }
         bubbleView = bubble
@@ -621,7 +686,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         val lp = resultCardLayoutParams()
         runCatching { wm.addView(card, lp) }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime result card addView failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+            AndroidAgentLogger.warnThrottled("runtime_result_card_add_view_failed") {
+                "Agent runtime result card addView failed: type=${throwable.safeLogType()}"
+            }
             return
         }
         resultCardView = card
@@ -739,7 +806,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (lp.flags == nextFlags) return
         lp.flags = nextFlags
         runCatching { wm.updateViewLayout(bubble, lp) }.onFailure { throwable ->
-            AndroidAgentLogger.warn("Agent runtime bubble focus update failed: ${throwable.message ?: throwable.javaClass.simpleName}")
+            AndroidAgentLogger.warnThrottled("runtime_bubble_focus_update_failed") {
+                "Agent runtime bubble focus update failed: type=${throwable.safeLogType()}"
+            }
         }
     }
 

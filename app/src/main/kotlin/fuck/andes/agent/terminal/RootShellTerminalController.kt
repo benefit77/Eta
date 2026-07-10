@@ -262,7 +262,10 @@ internal class RootShellTerminalController(
             job.completedAt = System.currentTimeMillis()
         }
         synchronized(asyncJobs) { asyncJobs[id] = job }
-        logger.info("Agent terminal async started: id=$id identity=$normalizedIdentity cwd=$safeCwd command=${trimmed.preview()}")
+        logger.info(
+            "Agent terminal action=open_and_exec outcome=started async=true " +
+                "identity=$normalizedIdentity timeoutMs=${job.timeoutMs} commandChars=${trimmed.length}"
+        )
         return JSONObject()
             .put("ok", true)
             .put("tool", "terminal")
@@ -386,8 +389,21 @@ internal class RootShellTerminalController(
         if (trimmed.isBlank()) return errorJson("INVALID_ARGUMENT", "command 不能为空")
         require(trimmed.length <= MAX_COMMAND_CHARS) { "command 过长：${trimmed.length}" }
         val timeout = timeoutMs.coerceIn(1_000, MAX_TIMEOUT_SECONDS * 1000)
-        logger.info("Agent terminal session exec: id=${session.id}, identity=${session.identity}, timeout=${timeout}ms, command=${trimmed.preview()}")
         val result = runSessionCommand(session, trimmed, timeout)
+        val outcome = when {
+            result.timedOut -> "timed_out"
+            result.exitCode == 0 -> "succeeded"
+            else -> "failed"
+        }
+        val logMessage =
+            "Agent terminal action=exec outcome=$outcome session=true " +
+                "identity=${session.identity} timeoutMs=$timeout commandChars=${trimmed.length} " +
+                "exitCode=${result.exitCode}"
+        if (result.exitCode == 0) {
+            logger.info(logMessage)
+        } else {
+            logger.warn(logMessage)
+        }
         if (result.cwd != null) session.cwd = result.cwd
         if (result.timedOut) {
             closeSession(session.id)
@@ -519,11 +535,24 @@ internal class RootShellTerminalController(
         val timeout = timeoutSeconds.coerceIn(1, MAX_TIMEOUT_SECONDS)
         val setup = if (safeCwd == DEFAULT_CWD) "mkdir -p ${shellQuote(DEFAULT_CWD)} && " else ""
         val fullCommand = "${setup}cd ${shellQuote(safeCwd)} && export TERM=dumb NO_COLOR=1 && $trimmed"
-        logger.info("Agent terminal $toolName: identity=$normalizedIdentity, cwd=$safeCwd, timeout=${timeout}s, command=${trimmed.preview()}")
         val result = if (normalizedIdentity == "root") {
             runSuText(fullCommand, timeoutSeconds = timeout.toLong())
         } else {
             runShText(fullCommand, timeoutSeconds = timeout.toLong())
+        }
+        val outcome = when (result.exitCode) {
+            0 -> "succeeded"
+            -2 -> "timed_out"
+            else -> "failed"
+        }
+        val action = if (toolName == "terminal") "open_and_exec" else "run_command"
+        val logMessage =
+            "Agent terminal action=$action outcome=$outcome identity=$normalizedIdentity " +
+                "timeoutSeconds=$timeout commandChars=${trimmed.length} exitCode=${result.exitCode}"
+        if (result.exitCode == 0) {
+            logger.info(logMessage)
+        } else {
+            logger.warn(logMessage)
         }
         val rawStdout = if (mergeStderr && result.stderr.isNotBlank()) {
             result.output + "\n[stderr]\n" + result.stderr
@@ -552,11 +581,18 @@ internal class RootShellTerminalController(
         val offset = offsetBytes.coerceAtLeast(0)
         val limit = maxBytes.coerceIn(1, MAX_READ_BYTES)
         val command = "dd if=${shellQuote(safePath)} bs=1 skip=$offset count=$limit 2>/dev/null"
-        logger.info("Agent terminal read_file: path=$safePath, offset=$offset, max=$limit")
         val result = runSuBytes(command, timeoutSeconds = 20)
         if (result.exitCode != 0) {
+            logger.warn(
+                "Agent terminal action=read_file outcome=failed offsetBytes=$offset " +
+                    "maxBytes=$limit exitCode=${result.exitCode} errorChars=${result.stderr.length}"
+            )
             return errorJson("READ_FAILED", result.stderr.ifBlank { "exit=${result.exitCode}" })
         }
+        logger.info(
+            "Agent terminal action=read_file outcome=succeeded offsetBytes=$offset " +
+                "maxBytes=$limit bytesRead=${result.output.size} exitCode=${result.exitCode}"
+        )
         val text = result.output.decodeToString()
         val truncated = result.output.size >= limit
         return JSONObject()
@@ -576,9 +612,12 @@ internal class RootShellTerminalController(
         require(bytes.size <= MAX_WRITE_BYTES) { "写入内容过大：${bytes.size} bytes" }
         val mode = if (append) ">>" else ">"
         val command = "mkdir -p ${shellQuote(File(safePath).parent ?: "/")} && cat $mode ${shellQuote(safePath)}"
-        logger.info("Agent terminal write_file: path=$safePath, append=$append, bytes=${bytes.size}")
         val result = runSuTextWithStdin(command, bytes, timeoutSeconds = 20)
         return if (result.exitCode == 0) {
+            logger.info(
+                "Agent terminal action=write_file outcome=succeeded append=$append " +
+                    "bytesWritten=${bytes.size} exitCode=${result.exitCode}"
+            )
             JSONObject()
                 .put("ok", true)
                 .put("tool", "write_file")
@@ -587,6 +626,11 @@ internal class RootShellTerminalController(
                 .put("bytes_written", bytes.size)
                 .toString()
         } else {
+            logger.warn(
+                "Agent terminal action=write_file outcome=failed append=$append " +
+                    "inputBytes=${bytes.size} exitCode=${result.exitCode} " +
+                    "outputChars=${result.output.length} errorChars=${result.stderr.length}"
+            )
             errorJson("WRITE_FAILED", result.stderr.ifBlank { result.output.ifBlank { "exit=${result.exitCode}" } })
         }
     }
@@ -596,8 +640,17 @@ internal class RootShellTerminalController(
         val maxEntries = limit.coerceIn(1, MAX_LIST_ENTRIES)
         val flags = if (showHidden) "-la" else "-l"
         val command = "cd ${shellQuote(safePath)} && ls $flags | head -n $maxEntries"
-        logger.info("Agent terminal list_directory: path=$safePath, hidden=$showHidden, limit=$maxEntries")
         val result = runSuText(command, timeoutSeconds = 15)
+        val logMessage =
+            "Agent terminal action=list_directory " +
+                "outcome=${if (result.exitCode == 0) "succeeded" else "failed"} " +
+                "showHidden=$showHidden limit=$maxEntries exitCode=${result.exitCode} " +
+                "outputChars=${result.output.length} errorChars=${result.stderr.length}"
+        if (result.exitCode == 0) {
+            logger.info(logMessage)
+        } else {
+            logger.warn(logMessage)
+        }
         return JSONObject()
             .put("ok", result.exitCode == 0)
             .put("tool", "list_directory")
@@ -721,9 +774,6 @@ internal class RootShellTerminalController(
 
     private fun String.truncateForJson(): String =
         if (length <= MAX_OUTPUT_CHARS) this else take(MAX_OUTPUT_CHARS) + "\n...[truncated]"
-
-    private fun String.preview(): String =
-        replace('\n', ' ').replace('\r', ' ').let { if (it.length > 160) it.take(160) + "..." else it }
 
     private fun errorJson(code: String, message: String): String =
         JSONObject()

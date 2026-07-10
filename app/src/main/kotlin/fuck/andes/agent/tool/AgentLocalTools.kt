@@ -107,10 +107,10 @@ internal class AgentLocalTools(
         )
         lastUiNodes = observation.nodes
         lastCoordinateSpace = observation.coordinateSpace
-        logger.info(
-            "Agent local tool observe_screen: nodes=${observation.nodes.size}, " +
+        logger.debug {
+            "Agent local tool action=observe_screen outcome=completed nodes=${observation.nodes.size} " +
                 "image=${observation.image?.bytes ?: 0}, coordinate=${observation.coordinateSpace?.summary()}"
-        )
+        }
         return AgentModelClient.ToolResult(
             content = observation.content,
             images = listOfNotNull(observation.image)
@@ -309,7 +309,7 @@ internal class AgentLocalTools(
         }
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         context.startActivity(launchIntent)
-        logger.info("Agent local tool launch_app: ${app.appName}/${app.packageName}")
+        logger.info("Agent local tool action=launch_app outcome=started")
         return JSONObject()
             .put("ok", true)
             .put("tool", "launch_app")
@@ -334,7 +334,7 @@ internal class AgentLocalTools(
             return errorResult("NO_ACTIVITY", "没有应用可以处理该 URI：$uriText")
         }
         context.startActivity(intent)
-        logger.info("Agent local tool open_uri: $uriText")
+        logger.info("Agent local tool action=open_uri outcome=started")
         return JSONObject()
             .put("ok", true)
             .put("tool", "open_uri")

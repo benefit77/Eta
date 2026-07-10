@@ -27,27 +27,24 @@ internal object CircleToSearchInvoker {
         fallbackMessage: String
     ): Boolean {
         if (!HookSupport.isPackageInstalled(context, ModuleConfig.GOOGLE_PACKAGE)) {
-            logger.warnThrottled(
-                "${source}_cts_google_missing",
+            logger.warnThrottled("${source}_cts_google_missing") {
                 "$source: Google App 未安装，$fallbackMessage"
-            )
+            }
             return false
         }
 
         val intent = Intent(ModuleConfig.CONTEXTUAL_SEARCH_ACTION).setPackage(ModuleConfig.GOOGLE_PACKAGE)
         if (!HookSupport.resolvesActivity(context, intent)) {
-            logger.warnThrottled(
-                "${source}_cts_entry_missing",
+            logger.warnThrottled("${source}_cts_entry_missing") {
                 "$source: Google App 未暴露 Contextual Search 入口，$fallbackMessage"
-            )
+            }
             return false
         }
 
         val binder = getContextualSearchBinder() ?: run {
-            logger.warnThrottled(
-                "${source}_cts_service_missing",
+            logger.warnThrottled("${source}_cts_service_missing") {
                 "$source: contextual_search service 不可用，$fallbackMessage"
-            )
+            }
             return false
         }
 
@@ -70,14 +67,13 @@ internal object CircleToSearchInvoker {
             } else {
                 startContextualSearch.method.invoke(service, ModuleConfig.CIRCLE_TO_SEARCH_ENTRYPOINT)
             }
-            logger.debug("$source: 已触发 Circle to Search")
+            logger.debug { "$source: 已触发 Circle to Search" }
             true
         }.getOrElse { throwable ->
             logger.errorThrottled(
-                "${source}_cts_trigger_failed",
-                "$source: 触发 Circle to Search 失败",
-                throwable
-            )
+                key = "${source}_cts_trigger_failed",
+                throwable = throwable
+            ) { "$source: 触发 Circle to Search 失败" }
             false
         }
     }

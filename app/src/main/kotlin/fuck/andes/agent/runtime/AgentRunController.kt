@@ -10,6 +10,9 @@ internal class AgentRunController {
     @Volatile
     private var cancelled = false
 
+    val isCancelled: Boolean
+        get() = cancelled
+
     @Volatile
     private var steerText: String? = null
 

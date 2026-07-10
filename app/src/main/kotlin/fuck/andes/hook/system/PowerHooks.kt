@@ -1,8 +1,11 @@
 package fuck.andes.hook.system
 
 import fuck.andes.core.HookSupport
+import fuck.andes.core.HookInstallation
+import fuck.andes.core.HookRegistrar
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.ModuleLogger
+import fuck.andes.core.safeLogType
 
 import android.content.Context
 import android.content.Intent
@@ -11,79 +14,73 @@ import android.os.Message
 import android.os.SystemClock
 import fuck.andes.config.Prefs
 import io.github.libxposed.api.XposedModule
-import java.util.concurrent.atomic.AtomicInteger
 
 internal object PowerHooks {
-    private const val SESSION_RETRY_COUNT = 3
-    private const val SESSION_RETRY_SLEEP_MS = 80L
-    private const val POST_REFRESH_SESSION_RETRY_COUNT = 4
-    private const val POST_REFRESH_SESSION_RETRY_SLEEP_MS = 120L
-    private const val RECOVERY_RETRY_COUNT = 3
-    private const val RECOVERY_RETRY_INITIAL_DELAY_MS = 1_200L
-    private const val RECOVERY_RETRY_STEP_DELAY_MS = 1_200L
-    private const val RECOVERY_SUCCESS_SUPPRESS_WINDOW_MS = 5_000L
     private const val OEM_ASSISTANT_HAPTIC_EFFECT_ID = 0
     private const val OEM_ASSISTANT_HAPTIC_REASON = "Speech - Long Press"
-    private const val RECOVERY_SOURCE_MARKER = "_recovery"
 
     @Volatile
     private var lastInterceptUptime = 0L
 
-    @Volatile
-    private var lastSuccessfulLaunchUptime = 0L
-
-    private val recoveryRetryGeneration = AtomicInteger(0)
-
     private enum class LaunchResult {
         LAUNCHED,
-        RECOVERY_PENDING,
+        ACTIVITY_FALLBACK_REQUIRED,
         NOT_HANDLED
     }
 
-    fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
-        // 当前机型实测证明 OplusSpeechHandler 是必要路径。
-        // 开关在拦截回调里判断，关闭则走原逻辑。
-        hookOplusSpeechHandler(module, logger, classLoader)
+    fun install(
+        module: XposedModule,
+        rootLogger: ModuleLogger,
+        classLoader: ClassLoader
+    ): HookInstallation {
+        val hooks = HookRegistrar(module, rootLogger, "Power")
+        return hooks.install {
+            // 当前机型实测证明 OplusSpeechHandler 是必要路径。
+            // 开关在拦截回调里判断，关闭则走原逻辑。
+            hookOplusSpeechHandler(hooks, classLoader)
+        }
     }
 
     private fun hookOplusSpeechHandler(
-        module: XposedModule,
-        logger: ModuleLogger,
+        hooks: HookRegistrar,
         classLoader: ClassLoader
     ) {
+        val logger = hooks.logger
         val handlerClass = HookSupport.findClassOrNull(classLoader, ModuleConfig.OP_LUS_SPEECH_HANDLER_CLASS)
         val handleMessageMethod = handlerClass?.let {
             HookSupport.findMethod(it, "handleMessage", Message::class.java)
         }
         if (handleMessageMethod == null) {
-            logger.warn("未找到 OplusSpeechHandler.handleMessage(Message)")
+            hooks.missing(
+                id = "system.power-assist-message",
+                description = "OplusSpeechHandler.handleMessage",
+                detail = "未找到 OplusSpeechHandler.handleMessage(Message)"
+            )
             return
         }
 
-        HookSupport.hookMethod(
-            module,
-            logger,
-            handleMessageMethod,
-            "PhoneWindowManagerExtImpl\$OplusSpeechHandler.handleMessage"
+        hooks.intercept(
+            id = "system.power-assist-message",
+            executable = handleMessageMethod,
+            description = "PhoneWindowManagerExtImpl\$OplusSpeechHandler.handleMessage"
         ) { chain ->
             val message = chain.getArg(0) as? Message
             if (message?.what != ModuleConfig.OP_LUS_ASSIST_MESSAGE_WHAT) {
-                return@hookMethod chain.proceed()
+                return@intercept chain.proceed()
             }
 
             // 开关关闭则走原逻辑（小布），不拦截。
             if (!Prefs.isEnabled(Prefs.Keys.POWER_KEY_TAKEOVER)) {
-                return@hookMethod chain.proceed()
+                return@intercept chain.proceed()
             }
 
             val handler = chain.getThisObject() as? Handler
             val pwm = resolvePhoneWindowManager(chain.getThisObject())
             if (pwm == null) {
-                logger.warnThrottled(
-                    "oplus_speech_missing_pwm",
+                logger.warnThrottled("oplus_speech_missing_pwm") {
                     "OplusSpeechHandler 未能解析 PhoneWindowManager，回退原逻辑"
-                )
-                return@hookMethod chain.proceed()
+                }
+                return@intercept chain.proceed()
             }
 
             when (tryLaunchGoogleAssist(
@@ -92,14 +89,25 @@ internal object PowerHooks {
                 source = "OplusSpeechHandler"
             )) {
                 LaunchResult.LAUNCHED -> null
-                LaunchResult.RECOVERY_PENDING -> {
-                    scheduleRecoveryRetries(
+                LaunchResult.ACTIVITY_FALLBACK_REQUIRED -> {
+                    val activityStarted = tryStartGoogleAssistActivityFallback(
+                        logger = logger,
+                        phoneWindowManager = pwm,
+                        source = "OplusSpeechHandler"
+                    )
+                    // Activity 兜底能处理本次触发，但仍需后台修复首选 voiceinteraction 路径。
+                    scheduleBackgroundRecovery(
                         handler = handler,
                         logger = logger,
                         phoneWindowManager = pwm,
                         source = "OplusSpeechHandler"
                     )
-                    null
+                    if (activityStarted) {
+                        null
+                    } else {
+                        // 当前触发不再等待后台修复；Google 两条快速路径都失败时立即回退小布。
+                        chain.proceed()
+                    }
                 }
                 LaunchResult.NOT_HANDLED -> chain.proceed()
             }
@@ -109,108 +117,66 @@ internal object PowerHooks {
     private fun tryLaunchGoogleAssist(
         logger: ModuleLogger,
         phoneWindowManager: Any,
-        source: String,
-        allowActivityFallback: Boolean = true
+        source: String
     ): LaunchResult {
         val context = HookSupport.getFieldValue(phoneWindowManager, "mContext") as? Context
         if (context == null) {
-            logger.warnThrottled("${source}_missing_context", "$source 缺少 mContext，回退原逻辑")
+            logger.warnThrottled("${source}_missing_context") {
+                "$source 缺少 mContext，回退原逻辑"
+            }
             return LaunchResult.NOT_HANDLED
         }
 
         if (!HookSupport.isPackageInstalled(context, ModuleConfig.GOOGLE_PACKAGE)) {
-            logger.warnThrottled("${source}_google_missing", "$source: Google App 未安装，回退原逻辑")
+            logger.warnThrottled("${source}_google_missing") {
+                "$source: Google App 未安装，回退原逻辑"
+            }
             return LaunchResult.NOT_HANDLED
         }
 
         val now = SystemClock.uptimeMillis()
         if (now - lastInterceptUptime <= ModuleConfig.INTERCEPT_DEDUP_WINDOW_MS) {
-            logger.debug("$source: 命中去重窗口，直接吞掉重复触发")
+            logger.debug { "$source: 命中去重窗口，直接吞掉重复触发" }
             return LaunchResult.LAUNCHED
         }
 
-        AssistantManager.ensureGoogleAssistantConfigured(context, logger)
-
-        if (tryShowGoogleAssistantSession(
+        if (AssistantManager.showGoogleAssistantSession(
                 context = context,
                 logger = logger,
                 source = source,
-                attempts = 1,
-                sleepMs = 0L
-            )
-        ) {
-            finalizeSuccessfulLaunch(logger, phoneWindowManager, source, now)
-            logger.debug("$source: 已通过 voiceinteraction 启动 Google")
-            return LaunchResult.LAUNCHED
-        }
-
-        if (AssistantManager.rebuildVoiceInteractionImplementation(
-                logger = logger,
-                force = true,
                 logFailures = false
-            ) &&
-            tryShowGoogleAssistantSession(
-                context = context,
-                logger = logger,
-                source = "${source}_rebuild",
-                attempts = SESSION_RETRY_COUNT,
-                sleepMs = SESSION_RETRY_SLEEP_MS
-            )
-        ) {
+            )) {
             finalizeSuccessfulLaunch(logger, phoneWindowManager, source, now)
-            logger.debug("$source: 重建 voiceinteraction 实现后已启动 Google")
+            logger.debug { "$source: 已通过 voiceinteraction 启动 Google" }
             return LaunchResult.LAUNCHED
         }
 
-        if (AssistantManager.ensureGoogleAssistantConfigured(context, logger, forceRefresh = true) &&
-            AssistantManager.rebuildVoiceInteractionImplementation(
-                logger = logger,
-                force = true,
-                logFailures = false
-            ) &&
-            tryShowGoogleAssistantSession(
-                context = context,
-                logger = logger,
-                source = "${source}_retry",
-                attempts = POST_REFRESH_SESSION_RETRY_COUNT,
-                sleepMs = POST_REFRESH_SESSION_RETRY_SLEEP_MS
-            )
-        ) {
-            finalizeSuccessfulLaunch(logger, phoneWindowManager, source, now)
-            logger.debug("$source: 刷新默认助理后已通过 voiceinteraction 启动 Google")
-            return LaunchResult.LAUNCHED
-        }
+        return LaunchResult.ACTIVITY_FALLBACK_REQUIRED
+    }
 
-        if (AssistantManager.ensureGoogleAssistantConfigured(context, logger)) {
-            lastInterceptUptime = now
-            logger.warnThrottled(
-                "${source}_assistant_recovery_pending",
-                "$source: 默认助理刚恢复，等待 voiceinteraction 完成重建，本次不再回退到 Google App"
-            )
-            return LaunchResult.RECOVERY_PENDING
-        }
-
-        if (!allowActivityFallback) {
-            return LaunchResult.NOT_HANDLED
-        }
-
-        if (startGoogleAssistActivity(context, logger, phoneWindowManager, source, now, Intent.ACTION_ASSIST)) {
-            return LaunchResult.LAUNCHED
-        }
-
-        return if (startGoogleAssistActivity(
-                context,
-                logger,
-                phoneWindowManager,
-                source,
-                now,
-                Intent.ACTION_VOICE_COMMAND
-            )
-        ) {
-            LaunchResult.LAUNCHED
-        } else {
-            LaunchResult.NOT_HANDLED
-        }
+    private fun tryStartGoogleAssistActivityFallback(
+        logger: ModuleLogger,
+        phoneWindowManager: Any,
+        source: String
+    ): Boolean {
+        val context = HookSupport.getFieldValue(phoneWindowManager, "mContext") as? Context
+            ?: return false
+        val now = SystemClock.uptimeMillis()
+        return startGoogleAssistActivity(
+            context = context,
+            logger = logger,
+            phoneWindowManager = phoneWindowManager,
+            source = source,
+            now = now,
+            action = Intent.ACTION_ASSIST
+        ) || startGoogleAssistActivity(
+            context = context,
+            logger = logger,
+            phoneWindowManager = phoneWindowManager,
+            source = source,
+            now = now,
+            action = Intent.ACTION_VOICE_COMMAND
+        )
     }
 
     private fun startGoogleAssistActivity(
@@ -225,24 +191,29 @@ internal object PowerHooks {
             setPackage(ModuleConfig.GOOGLE_PACKAGE)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        if (!HookSupport.resolvesActivity(context, intent)) {
-            logger.warnThrottled(
-                "${source}_${action}_missing",
+        val resolves = runCatching { HookSupport.resolvesActivity(context, intent) }
+            .getOrElse { throwable ->
+                logger.warnThrottled("${source}_${action}_resolve_failed") {
+                    "$source: 查询 Google $action 入口失败，type=${throwable.safeLogType()}"
+                }
+                false
+            }
+        if (!resolves) {
+            logger.warnThrottled("${source}_${action}_missing") {
                 "$source: Google 未暴露 $action，回退原逻辑"
-            )
+            }
             return false
         }
 
         return runCatching {
             context.startActivity(intent)
             finalizeSuccessfulLaunch(logger, phoneWindowManager, source, now)
-            logger.debug("$source: 已通过 $action 启动 Google")
+            logger.debug { "$source: 已通过 $action 启动 Google" }
             true
         }.getOrElse { throwable ->
-            logger.warnThrottled(
-                "${source}_${action}_failed",
-                "$source: $action 启动失败，回退原逻辑: ${throwable.message}"
-            )
+            logger.warnThrottled("${source}_${action}_failed") {
+                "$source: $action 启动失败，回退原逻辑，type=${throwable.safeLogType()}"
+            }
             false
         }
     }
@@ -262,20 +233,14 @@ internal object PowerHooks {
         phoneWindowManager: Any,
         source: String
     ) {
-        if (source.contains(RECOVERY_SOURCE_MARKER)) {
-            logger.debug("$source: 延迟自愈重试成功，跳过补发长按助理震感")
-            return
-        }
-
         if (invokeOplusAssistantHapticFeedback(phoneWindowManager)) {
-            logger.debug("$source: 已补发 Oplus 原生助理震感")
+            logger.debug { "$source: 已补发 Oplus 原生助理震感" }
             return
         }
 
-        logger.warnThrottled(
-            "${source}_assistant_haptic_missing",
+        logger.warnThrottled("${source}_assistant_haptic_missing") {
             "$source: 未找到 Oplus 原生长按助理震感入口"
-        )
+        }
     }
 
     private fun invokeOplusAssistantHapticFeedback(phoneWindowManager: Any): Boolean {
@@ -292,78 +257,47 @@ internal object PowerHooks {
         }.getOrDefault(false)
     }
 
-    private fun tryShowGoogleAssistantSession(
-        context: Context,
-        logger: ModuleLogger,
-        source: String,
-        attempts: Int,
-        sleepMs: Long
-    ): Boolean {
-        repeat(attempts) { index ->
-            if (AssistantManager.showGoogleAssistantSession(
-                    context = context,
-                    logger = logger,
-                    source = if (index == 0) source else "${source}_attempt${index + 1}",
-                    logFailures = false
-                )
-            ) {
-                return true
-            }
-            if (sleepMs > 0L && index != attempts - 1) {
-                SystemClock.sleep(sleepMs)
-            }
-        }
-        return false
-    }
-
-    private fun scheduleRecoveryRetries(
+    private fun scheduleBackgroundRecovery(
         handler: Handler?,
         logger: ModuleLogger,
         phoneWindowManager: Any,
         source: String
     ) {
         if (handler == null) {
-            logger.warnThrottled(
-                "${source}_recovery_missing_handler",
-                "$source: 无法取得 OplusSpeechHandler 实例，跳过延迟自愈重试"
-            )
+            logger.warnThrottled("${source}_recovery_missing_handler") {
+                "$source: 无法取得 OplusSpeechHandler 实例，跳过后台配置修复"
+            }
             return
         }
 
-        val generation = recoveryRetryGeneration.incrementAndGet()
-        repeat(RECOVERY_RETRY_COUNT) { index ->
-            val attempt = index + 1
-            val delayMs = RECOVERY_RETRY_INITIAL_DELAY_MS + index * RECOVERY_RETRY_STEP_DELAY_MS
-            handler.postDelayed({
-                if (recoveryRetryGeneration.get() != generation) {
-                    return@postDelayed
-                }
-                if (SystemClock.uptimeMillis() - lastSuccessfulLaunchUptime <= RECOVERY_SUCCESS_SUPPRESS_WINDOW_MS) {
-                    return@postDelayed
-                }
-                // 即时关闭：开关在延迟任务排队期间可能已被用户关闭。
-                if (!Prefs.isEnabled(Prefs.Keys.POWER_KEY_TAKEOVER)) {
-                    return@postDelayed
-                }
+        val context = HookSupport.getFieldValue(phoneWindowManager, "mContext") as? Context
+        if (context == null) {
+            logger.warnThrottled("${source}_recovery_missing_context") {
+                "$source: 无法取得 mContext，跳过后台配置修复"
+            }
+            return
+        }
 
-                when (tryLaunchGoogleAssist(
-                    logger = logger,
-                    phoneWindowManager = phoneWindowManager,
-                    source = "${source}_recovery$attempt",
-                    allowActivityFallback = false
-                )) {
-                    LaunchResult.LAUNCHED -> recoveryRetryGeneration.incrementAndGet()
-                    LaunchResult.RECOVERY_PENDING -> Unit
-                    LaunchResult.NOT_HANDLED -> Unit
-                }
-            }, delayMs)
+        val scheduled = AssistantManager.scheduleGoogleAssistantRecovery(
+            context = context,
+            logger = logger,
+            handler = handler,
+            forceRefresh = true,
+            requiredPreferenceKey = Prefs.Keys.POWER_KEY_TAKEOVER
+        )
+        if (!scheduled) {
+            logger.warnThrottled("${source}_configuration_schedule_failed") {
+                "$source: 默认助理后台修复无法入队"
+            }
+        } else {
+            logger.warnThrottled("${source}_assistant_recovery_pending") {
+                "$source: voiceinteraction 失败，已在后台修复默认助理配置"
+            }
         }
     }
 
     private fun markLaunchSuccess(now: Long) {
         lastInterceptUptime = now
-        lastSuccessfulLaunchUptime = now
-        recoveryRetryGeneration.incrementAndGet()
     }
 
     private fun resolvePhoneWindowManager(handlerInstance: Any): Any? {

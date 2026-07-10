@@ -1,6 +1,8 @@
 package fuck.andes.hook.system
 
 import fuck.andes.core.HookSupport
+import fuck.andes.core.HookInstallation
+import fuck.andes.core.HookRegistrar
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.ModuleLogger
 
@@ -11,18 +13,26 @@ import io.github.libxposed.api.XposedModule
 
 internal object ContextualSearchHooks {
 
-    fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
-        // ContextualSearch 服务补齐是一圈即搜的底层依赖（被 ColorOS 砍掉），不可选。
-        hookContextualSearchBootstrap(module, logger, classLoader)
-        hookContextualSearchPackage(module, logger, classLoader)
-        hookContextualSearchPermission(module, logger, classLoader)
+    fun install(
+        module: XposedModule,
+        rootLogger: ModuleLogger,
+        classLoader: ClassLoader
+    ): HookInstallation {
+        val hooks = HookRegistrar(module, rootLogger, "ContextualSearch")
+        return hooks.install {
+            // ContextualSearch 服务补齐是一圈即搜的底层依赖（被 ColorOS 砍掉），不可选。
+            hookContextualSearchBootstrap(module, hooks, classLoader)
+            hookContextualSearchPackage(hooks, classLoader)
+            hookContextualSearchPermission(hooks, classLoader)
+        }
     }
 
     private fun hookContextualSearchBootstrap(
         module: XposedModule,
-        logger: ModuleLogger,
+        hooks: HookRegistrar,
         classLoader: ClassLoader
     ) {
+        val logger = hooks.logger
         // 当前设备 2026-03-26 的重启日志已经证明，真正稳定生效的是 startOtherServices 末尾的补启动兜底。
         // 这里直接守住系统服务启动尾段，不再把 deviceHasConfigString 当成唯一生效点。
         val systemServerClass = HookSupport.findClassOrNull(classLoader, ModuleConfig.SYSTEM_SERVER_CLASS)
@@ -33,7 +43,11 @@ internal object ContextualSearchHooks {
             null
         }
         if (startOtherServicesMethod == null) {
-            logger.warn("未找到 SystemServer.startOtherServices(TimingsTraceAndSlog)")
+            hooks.missing(
+                id = "system.contextual-search-bootstrap",
+                description = "SystemServer.startOtherServices",
+                detail = "未找到 SystemServer.startOtherServices(TimingsTraceAndSlog)"
+            )
             return
         }
 
@@ -43,11 +57,10 @@ internal object ContextualSearchHooks {
             startOtherServicesMethod,
             "SystemServer.startOtherServices(TimingsTraceAndSlog)"
         )
-        HookSupport.hookMethod(
-            module,
-            logger,
-            startOtherServicesMethod,
-            "SystemServer.startOtherServices"
+        hooks.intercept(
+            id = "system.contextual-search-bootstrap",
+            executable = startOtherServicesMethod,
+            description = "SystemServer.startOtherServices"
         ) { chain ->
             val result = chain.proceed()
             ensureContextualSearchService(module, logger, classLoader, chain.getThisObject(), "startOtherServices")
@@ -56,45 +69,49 @@ internal object ContextualSearchHooks {
     }
 
     private fun hookContextualSearchPackage(
-        module: XposedModule,
-        logger: ModuleLogger,
+        hooks: HookRegistrar,
         classLoader: ClassLoader
     ) {
         val serviceClass = HookSupport.findClassOrNull(classLoader, ModuleConfig.CONTEXTUAL_SEARCH_CLASS)
         val method = serviceClass?.let { HookSupport.findMethod(it, "getContextualSearchPackageName") }
         if (method == null) {
-            logger.warn("未找到 ContextualSearchManagerService.getContextualSearchPackageName()")
+            hooks.missing(
+                id = "system.contextual-search-package",
+                description = "ContextualSearchManagerService.getContextualSearchPackageName",
+                detail = "未找到 ContextualSearchManagerService.getContextualSearchPackageName()"
+            )
             return
         }
 
-        HookSupport.hookMethod(
-            module,
-            logger,
-            method,
-            "ContextualSearchManagerService.getContextualSearchPackageName"
+        hooks.intercept(
+            id = "system.contextual-search-package",
+            executable = method,
+            description = "ContextualSearchManagerService.getContextualSearchPackageName"
         ) { ModuleConfig.GOOGLE_PACKAGE }
     }
 
     private fun hookContextualSearchPermission(
-        module: XposedModule,
-        logger: ModuleLogger,
+        hooks: HookRegistrar,
         classLoader: ClassLoader
     ) {
         val serviceClass = HookSupport.findClassOrNull(classLoader, ModuleConfig.CONTEXTUAL_SEARCH_CLASS)
         val method = serviceClass?.let { HookSupport.findMethod(it, "enforcePermission", String::class.java) }
         if (method == null) {
-            logger.warn("未找到 ContextualSearchManagerService.enforcePermission(String)")
+            hooks.missing(
+                id = "system.contextual-search-permission",
+                description = "ContextualSearchManagerService.enforcePermission",
+                detail = "未找到 ContextualSearchManagerService.enforcePermission(String)"
+            )
             return
         }
 
-        HookSupport.hookMethod(
-            module,
-            logger,
-            method,
-            "ContextualSearchManagerService.enforcePermission"
+        hooks.intercept(
+            id = "system.contextual-search-permission",
+            executable = method,
+            description = "ContextualSearchManagerService.enforcePermission"
         ) { chain ->
             val functionName = chain.getArg(0) as? String
-            if (functionName == "startContextualSearch" && isAllowedContextualSearchCaller(chain.getThisObject())) {
+            if (functionName == "startContextualSearch" && isAllowedContextualSearchUid(chain.getThisObject())) {
                 null
             } else {
                 chain.proceed()
@@ -102,11 +119,18 @@ internal object ContextualSearchHooks {
         }
     }
 
-    private fun isAllowedContextualSearchCaller(serviceInstance: Any): Boolean {
+    private fun isAllowedContextualSearchUid(serviceInstance: Any): Boolean {
         val context = HookSupport.invokeNoArgs(serviceInstance, "getContext") as? Context
             ?: HookSupport.getFieldValue(serviceInstance, "mContext") as? Context
             ?: return false
-        val packages = context.packageManager.getPackagesForUid(Binder.getCallingUid()) ?: return false
+        // IContextualSearchManager 是 oneway AIDL，调用 PID 固定不可用；Android 权限主体本身也是 UID。
+        // 因此这里只能按 UID 鉴权，getPackagesForUid 的结果代表整个 shared UID 安全边界。
+        val callingUid = Binder.getCallingUid()
+        val packages = try {
+            context.packageManager.getPackagesForUid(callingUid)
+        } catch (_: Exception) {
+            null
+        } ?: return false
         return packages.contains(ModuleConfig.SYSTEM_UI_PACKAGE) ||
             packages.contains(ModuleConfig.COLOR_DIRECT_PACKAGE)
     }
@@ -119,7 +143,7 @@ internal object ContextualSearchHooks {
         source: String
     ) {
         if (isContextualSearchServiceAlive()) {
-            logger.debug("$source: contextual_search service 已存在")
+            logger.debug { "$source: contextual_search service 已存在" }
             return
         }
 
@@ -145,16 +169,16 @@ internal object ContextualSearchHooks {
             return
         }
 
-        runCatching {
+        try {
             module.getInvoker(startServiceMethod).invoke(systemServiceManager, serviceClass)
-        }.onSuccess {
             if (isContextualSearchServiceAlive()) {
-                logger.debug("$source: 已补启动 ContextualSearchManagerService")
+                logger.debug { "$source: 已补启动 ContextualSearchManagerService" }
             } else {
                 logger.warn("$source: 已调用 startService(Class)，但 contextual_search 仍不可用")
             }
-        }.onFailure { throwable ->
-            logger.error("$source: 补启动 ContextualSearchManagerService 失败", throwable)
+        } catch (exception: Exception) {
+            // XposedFrameworkError 属于 Error，必须继续交给框架处理。
+            logger.error("$source: 补启动 ContextualSearchManagerService 失败", exception)
         }
     }
 

@@ -37,6 +37,23 @@
 
 # 配置 key 是字符串常量并通过静态调用访问，不需要保留类名或成员名。
 
+# ── Release 日志策略 ────────────────────────────────────────────────────────
+# 仅删除 Eta 自有代码中的 Android VERBOSE/DEBUG 调用；INFO/WARN/ERROR 必须保留，
+# 第三方依赖的日志策略由依赖自身决定。
+-maximumremovedandroidloglevel 3 class fuck.andes.** { *; }
+
+# XposedModule.log 不是 android.util.Log，R8 无法通过上面的规则识别。
+# debug supplier 是纯观察 API；禁止在 supplier 内执行任何业务副作用。
+-assumenosideeffects interface fuck.andes.core.AgentLogger {
+    public abstract void debug(kotlin.jvm.functions.Function0);
+}
+-assumenosideeffects class fuck.andes.core.AndroidAgentLogger {
+    public void debug(kotlin.jvm.functions.Function0);
+}
+-assumenosideeffects class fuck.andes.core.ModuleLogger {
+    public void debug(kotlin.jvm.functions.Function0);
+}
+
 # ── DataStore / Preferences ─────────────────────────────────────────────────
 -keepclassmembers class * extends androidx.datastore.preferences.protobuf.GeneratedMessageLite {
     <fields>;

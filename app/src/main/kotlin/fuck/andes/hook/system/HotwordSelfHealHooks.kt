@@ -1,6 +1,8 @@
 package fuck.andes.hook.system
 
 import fuck.andes.core.HookSupport
+import fuck.andes.core.HookInstallation
+import fuck.andes.core.HookRegistrar
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.ModuleLogger
 
@@ -27,58 +29,85 @@ internal object HotwordSelfHealHooks {
     private var pendingResumeHandler: Handler? = null
     private var pendingResumeRunnable: Runnable? = null
 
-    fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
-        val phoneWindowManagerClass = HookSupport.findClassOrNull(
-            classLoader,
-            ModuleConfig.PHONE_WINDOW_MANAGER_CLASS
-        )
-        val screenTurnedOffMethod = phoneWindowManagerClass?.let {
-            HookSupport.findMethod(
-                it,
+    fun install(
+        module: XposedModule,
+        rootLogger: ModuleLogger,
+        classLoader: ClassLoader
+    ): HookInstallation {
+        val hooks = HookRegistrar(module, rootLogger, "HotwordSelfHeal")
+        val logger = hooks.logger
+        return hooks.install {
+            val phoneWindowManagerClass = HookSupport.findClassOrNull(
+                classLoader,
+                ModuleConfig.PHONE_WINDOW_MANAGER_CLASS
+            )
+            if (phoneWindowManagerClass == null) {
+                hooks.skipped(
+                    id = "system.hotword-screen-off",
+                    description = "PhoneWindowManager.screenTurnedOff",
+                    detail = "未找到 PhoneWindowManager，跳过 screenTurnedOff Hook"
+                )
+                hooks.skipped(
+                    id = "system.hotword-screen-on",
+                    description = "PhoneWindowManager.screenTurnedOn",
+                    detail = "未找到 PhoneWindowManager，跳过 screenTurnedOn Hook"
+                )
+                return@install
+            }
+
+            val screenTurnedOffMethod = HookSupport.findMethod(
+                phoneWindowManagerClass,
                 "screenTurnedOff",
                 Int::class.javaPrimitiveType!!,
                 Boolean::class.javaPrimitiveType!!
             )
-        }
-        if (screenTurnedOffMethod == null) {
-            logger.warn("未找到 PhoneWindowManager.screenTurnedOff(int, boolean)")
-            return
-        }
-        val screenTurnedOnMethod = phoneWindowManagerClass.let {
-            HookSupport.findMethod(it, "screenTurnedOn", Int::class.javaPrimitiveType!!)
-        }
-
-        HookSupport.hookMethod(
-            module,
-            logger,
-            screenTurnedOffMethod,
-            "PhoneWindowManager.screenTurnedOff"
-        ) { chain ->
-            val displayId = chain.getArg(0) as? Int ?: -1
-            val result = chain.proceed()
-            // 开关关闭则不恢复热词检测。
-            if (displayId == 0 && Prefs.isEnabled(Prefs.Keys.HOTWORD_SELF_HEAL)) {
-                scheduleHotwordResume(chain.getThisObject(), logger)
-            }
-            result
-        }
-
-        if (screenTurnedOnMethod != null) {
-            HookSupport.hookMethod(
-                module,
-                logger,
-                screenTurnedOnMethod,
-                "PhoneWindowManager.screenTurnedOn"
-            ) { chain ->
-                val displayId = chain.getArg(0) as? Int ?: -1
-                val result = chain.proceed()
-                if (displayId == 0) {
-                    cancelPendingResume()
+            if (screenTurnedOffMethod != null) {
+                hooks.intercept(
+                    id = "system.hotword-screen-off",
+                    executable = screenTurnedOffMethod,
+                    description = "PhoneWindowManager.screenTurnedOff"
+                ) { chain ->
+                    val displayId = chain.getArg(0) as? Int ?: -1
+                    val result = chain.proceed()
+                    // 开关关闭则不恢复热词检测。
+                    if (displayId == 0 && Prefs.isEnabled(Prefs.Keys.HOTWORD_SELF_HEAL)) {
+                        scheduleHotwordResume(chain.getThisObject(), logger)
+                    }
+                    result
                 }
-                result
+            } else {
+                hooks.missing(
+                    id = "system.hotword-screen-off",
+                    description = "PhoneWindowManager.screenTurnedOff",
+                    detail = "未找到 PhoneWindowManager.screenTurnedOff(int, boolean)"
+                )
             }
-        } else {
-            logger.warn("未找到 PhoneWindowManager.screenTurnedOn(int)")
+
+            val screenTurnedOnMethod = HookSupport.findMethod(
+                phoneWindowManagerClass,
+                "screenTurnedOn",
+                Int::class.javaPrimitiveType!!
+            )
+            if (screenTurnedOnMethod != null) {
+                hooks.intercept(
+                    id = "system.hotword-screen-on",
+                    executable = screenTurnedOnMethod,
+                    description = "PhoneWindowManager.screenTurnedOn"
+                ) { chain ->
+                    val displayId = chain.getArg(0) as? Int ?: -1
+                    val result = chain.proceed()
+                    if (displayId == 0) {
+                        cancelPendingResume()
+                    }
+                    result
+                }
+            } else {
+                hooks.missing(
+                    id = "system.hotword-screen-on",
+                    description = "PhoneWindowManager.screenTurnedOn",
+                    detail = "未找到 PhoneWindowManager.screenTurnedOn(int)"
+                )
+            }
         }
     }
 
@@ -121,7 +150,7 @@ internal object HotwordSelfHealHooks {
             )
             if (resumed) {
                 cancelPendingResume(resetCooldown = false)
-                logger.debug("ScreenOffHotwordSelfHeal: 已恢复 Google 软件热词检测")
+                logger.debug { "ScreenOffHotwordSelfHeal: 已恢复 Google 软件热词检测" }
                 return@Runnable
             }
 

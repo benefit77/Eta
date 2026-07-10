@@ -21,6 +21,7 @@ import fuck.andes.agent.runtime.AgentUiHandoffPayload
 import fuck.andes.agent.skill.SkillRuntime
 import fuck.andes.config.Prefs
 import fuck.andes.core.AndroidAgentLogger
+import fuck.andes.core.safeLogType
 import fuck.andes.data.repository.RuntimeConfigRepository
 import fuck.andes.ui.model.AgentChatHomeUiState
 import fuck.andes.ui.model.AgentChatMessageUi
@@ -119,7 +120,9 @@ internal class AgentAppState(
         val completedRuns = runCatching {
             client.drainCompletedRuns()
         }.getOrElse { throwable ->
-            AndroidAgentLogger.warn("Agent UI: drain 未交付结果失败: ${throwable.message ?: throwable.javaClass.simpleName}")
+            AndroidAgentLogger.warnThrottled("agent_ui_drain_results_failed") {
+                "Agent UI pending result recovery failed: type=${throwable.safeLogType()}"
+            }
             emptyList()
         }
         if (completedRuns.isEmpty()) return

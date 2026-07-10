@@ -1,6 +1,8 @@
 package fuck.andes.hook.colordirect
 
 import fuck.andes.core.HookSupport
+import fuck.andes.core.HookInstallation
+import fuck.andes.core.HookRegistrar
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.ModuleLogger
 import fuck.andes.hook.system.CircleToSearchInvoker
@@ -23,21 +25,32 @@ internal object ColorDirectHooks {
     @Volatile
     private var lastHandledUptime = 0L
 
-    fun install(module: XposedModule, logger: ModuleLogger, classLoader: ClassLoader) {
-        hookCollectInfoActivity(module, logger, classLoader)
+    fun install(
+        module: XposedModule,
+        rootLogger: ModuleLogger,
+        classLoader: ClassLoader
+    ): HookInstallation {
+        val hooks = HookRegistrar(module, rootLogger, "ColorDirect")
+        return hooks.install {
+            hookCollectInfoActivity(hooks, classLoader)
+        }
     }
 
     private fun hookCollectInfoActivity(
-        module: XposedModule,
-        logger: ModuleLogger,
+        hooks: HookRegistrar,
         classLoader: ClassLoader
     ) {
+        val logger = hooks.logger
         val activityClass = HookSupport.findClassOrNull(
             classLoader,
             ModuleConfig.COLOR_DIRECT_COLLECT_ACTIVITY_CLASS
         )
         if (activityClass == null) {
-            logger.warn("未找到 CollectInfoActivity，无法接管双指识屏 Activity 入口")
+            hooks.missing(
+                id = "colordirect.collect-info",
+                description = "CollectInfoActivity.M(Intent)",
+                detail = "未找到 CollectInfoActivity，无法接管双指识屏 Activity 入口"
+            )
             return
         }
         val startInfoClass = HookSupport.findClassOrNull(
@@ -47,24 +60,27 @@ internal object ColorDirectHooks {
 
         val method = HookSupport.findMethod(activityClass, "M", Intent::class.java)
         if (method == null) {
-            logger.warn("未找到 CollectInfoActivity.M(Intent)")
+            hooks.missing(
+                id = "colordirect.collect-info",
+                description = "CollectInfoActivity.M(Intent)",
+                detail = "未找到 CollectInfoActivity.M(Intent)"
+            )
             return
         }
 
-        HookSupport.hookMethod(
-            module,
-            logger,
-            method,
-            "CollectInfoActivity.M"
+        hooks.intercept(
+            id = "colordirect.collect-info",
+            executable = method,
+            description = "CollectInfoActivity.M(Intent)"
         ) { chain ->
             // 开关关闭则走原双指识屏逻辑。
             if (!Prefs.isEnabled(Prefs.Keys.DOUBLE_FINGER_CIRCLE_TO_SEARCH)) {
-                return@hookMethod chain.proceed()
+                return@intercept chain.proceed()
             }
             val activity = chain.getThisObject() as? Activity
             val intent = chain.getArg(0) as? Intent
             if (activity == null || !isDoubleFingerCollectIntent(intent, startInfoClass)) {
-                return@hookMethod chain.proceed()
+                return@intercept chain.proceed()
             }
 
             if (tryStartCircleToSearch(activity, logger)) {
@@ -74,14 +90,12 @@ internal object ColorDirectHooks {
                 chain.proceed()
             }
         }
-
-        logger.debug("$SOURCE: 双指识屏 Hook 已安装")
     }
 
     private fun tryStartCircleToSearch(context: Context, logger: ModuleLogger): Boolean {
         val now = SystemClock.uptimeMillis()
         if (now - lastHandledUptime <= ModuleConfig.INTERCEPT_DEDUP_WINDOW_MS) {
-            logger.debug("$SOURCE: 命中去重窗口，吞掉重复双指识屏")
+            logger.debug { "$SOURCE: 命中去重窗口，吞掉重复双指识屏" }
             return true
         }
 
@@ -94,7 +108,7 @@ internal object ColorDirectHooks {
         }
 
         lastHandledUptime = now
-        logger.debug("$SOURCE: 命中双指识屏，已转发 Circle to Search")
+        logger.debug { "$SOURCE: 命中双指识屏，已转发 Circle to Search" }
         return true
     }
 

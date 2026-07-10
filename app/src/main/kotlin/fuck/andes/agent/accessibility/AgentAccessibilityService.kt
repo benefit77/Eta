@@ -19,6 +19,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import fuck.andes.core.AndroidAgentLogger
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
@@ -228,12 +229,12 @@ class AgentAccessibilityService : AccessibilityService() {
         // merge 必须在 recycle 之前：merge 内用 window.id 查 screenshots，
         // recycle 后 window.id 失效会查不到 → 合成全黑
         val merged = mergeScreenshots(screenshots, sorted, screenW, screenH)
-        android.util.Log.d(
-            "AgentA11y",
-            "captureScreenshot: allWindows=${allWindows.size} valid=${validWindows.size} " +
+        AndroidAgentLogger.debug {
+            "Agent accessibility action=capture_screenshot outcome=merged " +
+                "allWindows=${allWindows.size} validWindows=${validWindows.size} " +
                 "success=$successCount screenshots=${screenshots.size} " +
                 "screen=${screenW}x${screenH} merged=${merged?.width}x${merged?.height}"
-        )
+        }
         sorted.forEach { runCatching { it.recycle() } }
         return merged
     }

@@ -468,12 +468,18 @@ internal class RootShellDeviceController(
                 bitmap.recycle()
                 if (image.bytes > 0) return image
             }
-            logger.warn("Agent accessibility screenshot unavailable, falling back to screencap")
+            logger.debug {
+                "Agent device action=capture_screenshot outcome=fallback source=root"
+            }
         }
         // 回退：root screencap（会包含浮层，仅在无障碍截图不可用时使用）
         val result = runSuBytes("screencap -p", timeoutSeconds = 8)
         if (result.exitCode != 0 || result.output.isEmpty()) {
-            logger.warn("Agent root screenshot failed: exit=${result.exitCode}, ${result.stderr.take(160)}")
+            logger.warn(
+                "Agent device action=capture_screenshot outcome=failed source=root " +
+                    "exitCode=${result.exitCode} outputBytes=${result.output.size} " +
+                    "errorChars=${result.stderr.length}"
+            )
             return null
         }
         return AgentImageCodec.fromBytes(result.output, source = "screen")
@@ -486,7 +492,10 @@ internal class RootShellDeviceController(
             timeoutSeconds = 10
         )
         if (result.exitCode != 0 || result.output.isBlank()) {
-            logger.warn("Agent root uiautomator failed: exit=${result.exitCode}, ${result.output.take(160)}")
+            logger.warn(
+                "Agent device action=dump_ui outcome=failed source=root " +
+                    "exitCode=${result.exitCode} outputChars=${result.output.length}"
+            )
             return emptyList()
         }
         return parseUiNodes(result.output, maxNodes)

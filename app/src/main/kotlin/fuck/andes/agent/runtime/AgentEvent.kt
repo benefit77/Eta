@@ -1,5 +1,7 @@
 package fuck.andes.agent.runtime
 
+import fuck.andes.core.toSafeLogToken
+
 internal sealed interface AgentEvent {
     fun toLogLine(): String
 
@@ -50,7 +52,8 @@ internal sealed interface AgentEvent {
         val name: String? = null,
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "assistant_block_start round=$round, kind=$kind, index=$index, id=$blockId, name=$name"
+            "assistant_block_start round=$round, kind=$kind, index=$index, " +
+                "name=${name.toSafeLogToken()}"
     }
 
     data class AssistantBlockDelta(
@@ -73,7 +76,8 @@ internal sealed interface AgentEvent {
         val contentChars: Int,
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "assistant_block_end round=$round, kind=$kind, index=$index, id=$blockId, name=$name, chars=$contentChars"
+            "assistant_block_end round=$round, kind=$kind, index=$index, " +
+                "name=${name.toSafeLogToken()}, chars=$contentChars"
     }
 
     data class AssistantReceived(
@@ -83,7 +87,9 @@ internal sealed interface AgentEvent {
         val toolNames: List<String>
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "assistant_received round=$round, content_chars=$contentChars, reasoning_chars=${reasoningContent.length}, tools=$toolNames"
+            "assistant_received round=$round, content_chars=$contentChars, " +
+                "reasoning_chars=${reasoningContent.length}, tool_count=${toolNames.size}, " +
+                "tools=${toolNames.take(MAX_LOGGED_TOOL_NAMES).map { it.toSafeLogToken() }}"
     }
 
     data class UsageReceived(
@@ -109,7 +115,7 @@ internal sealed interface AgentEvent {
         val argsPreview: String
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "tool_started round=$round, id=$toolCallId, name=$name, args=$argsPreview"
+            "tool_started round=$round, name=${name.toSafeLogToken()}, args_chars=${argsPreview.length}"
     }
 
     data class ToolFinished(
@@ -121,7 +127,8 @@ internal sealed interface AgentEvent {
         val imageBytes: Int
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "tool_finished round=$round, id=$toolCallId, name=$name, $resultSummary, images=$imageCount, image_bytes=$imageBytes"
+            "tool_finished round=$round, name=${name.toSafeLogToken()}, " +
+                "${resultSummary.toSafeResultLogFields()}, images=$imageCount, image_bytes=$imageBytes"
     }
 
     data class ToolImagesAttached(
@@ -131,7 +138,8 @@ internal sealed interface AgentEvent {
         val imageBytes: Int
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "tool_images_attached round=$round, name=$toolName, images=$imageCount, image_bytes=$imageBytes"
+            "tool_images_attached round=$round, name=${toolName.toSafeLogToken()}, " +
+                "images=$imageCount, image_bytes=$imageBytes"
     }
 
     data class RunFinished(
@@ -146,6 +154,32 @@ internal sealed interface AgentEvent {
         val reason: String
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "run_failed reason=${reason.replace('\n', ' ').replace('\r', ' ')}"
+            "run_failed reason_chars=${reason.length}"
     }
+}
+
+private const val MAX_LOGGED_TOOL_NAMES = 8
+private const val RESULT_CODE_MARKER = "code="
+private const val RESULT_FIELD_SEPARATOR = ", "
+
+private fun String.toSafeResultLogFields(): String = buildString {
+    append("summary_chars=").append(this@toSafeResultLogFields.length)
+    extractResultCode()?.let { resultCode ->
+        append(", code=").append(resultCode.toSafeLogToken())
+    }
+}
+
+private fun String.extractResultCode(): String? {
+    val fieldStart = when {
+        startsWith(RESULT_CODE_MARKER) -> 0
+        else -> indexOf(RESULT_FIELD_SEPARATOR + RESULT_CODE_MARKER)
+            .takeIf { it >= 0 }
+            ?.plus(RESULT_FIELD_SEPARATOR.length)
+            ?: return null
+    }
+    val valueStart = fieldStart + RESULT_CODE_MARKER.length
+    val valueEnd = indexOf(RESULT_FIELD_SEPARATOR, startIndex = valueStart)
+        .takeIf { it >= 0 }
+        ?: length
+    return substring(valueStart, valueEnd)
 }

@@ -1190,7 +1190,7 @@ internal object AgentModelClient {
                 if (result.images.isNotEmpty()) append(", images=").append(result.images.size)
             }
         }.getOrElse {
-            "chars=${result.content.length}, raw=${result.content.compactTrace()}"
+            "chars=${result.content.length}"
         }
 
     @Serializable

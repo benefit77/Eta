@@ -9,6 +9,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import fuck.andes.core.AgentLogger
+import fuck.andes.core.safeLogType
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -52,12 +53,15 @@ internal class AgentRuntimeClient(
                     msg.data = AgentRuntimeWire.toBundle(request)
                     serviceMessenger?.send(msg)
                 }.onFailure { throwable ->
+                    logger.warn(
+                        "Agent runtime start request send failed: type=${throwable.safeLogType()}"
+                    )
                     resultRef.set(
                         AgentRuntimeWire.RunResult(
                             runId = "",
                             ok = false,
                             content = "",
-                            error = throwable.message ?: throwable.javaClass.simpleName
+                            error = "Agent Runtime 请求发送失败（${throwable.safeLogType()}）"
                         )
                     )
                     resultLatch.countDown()
@@ -120,7 +124,7 @@ internal class AgentRuntimeClient(
             runCatching {
                 if (bound) context.unbindService(connection)
             }.onFailure { throwable ->
-                logger.warn("Agent runtime: 解绑服务失败: ${throwable.message ?: throwable.javaClass.simpleName}")
+                logger.warn("Agent runtime service unbind failed: type=${throwable.safeLogType()}")
             }
         }
     }
@@ -134,12 +138,13 @@ internal class AgentRuntimeClient(
         }
     }
 
-    fun ackResult(runId: String) {
-        if (runId.isBlank()) return
-        withRuntimeMessenger(Unit) { serviceMessenger ->
+    fun ackResult(runId: String): Boolean {
+        if (runId.isBlank()) return false
+        return withRuntimeMessenger(false) { serviceMessenger ->
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_ACK_RESULT)
             msg.data = AgentRuntimeWire.ackBundle(runId)
             serviceMessenger.send(msg)
+            true
         }
     }
 
@@ -195,11 +200,13 @@ internal class AgentRuntimeClient(
             Thread.currentThread().interrupt()
             return defaultValue
         } catch (throwable: Throwable) {
-            logger.warn("Agent runtime: 服务调用失败: ${throwable.message ?: throwable.javaClass.simpleName}")
+            logger.warn("Agent runtime service call failed: type=${throwable.safeLogType()}")
             return defaultValue
         } finally {
             runCatching {
                 if (bound) context.unbindService(connection)
+            }.onFailure { throwable ->
+                logger.warn("Agent runtime service unbind failed: type=${throwable.safeLogType()}")
             }
         }
     }
