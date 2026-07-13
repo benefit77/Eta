@@ -23,11 +23,31 @@ android {
         versionName = "1.5.1"
     }
 
+    signingConfigs {
+        create("debug") {
+            storeFile = file("eta-debug.jks")
+            storePassword = System.getenv("DEBUG_KEYSTORE_PASSWORD") ?: "android"
+            keyAlias = System.getenv("DEBUG_KEY_ALIAS") ?: "androiddebugkey"
+            keyPassword = System.getenv("DEBUG_KEY_PASSWORD") ?: "android"
+        }
+        create("release") {
+            storeFile = file("eta-release.jks")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "EtaRelease"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "eta"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "EtaRelease"
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     buildTypes {
         debug {
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = false
         }
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

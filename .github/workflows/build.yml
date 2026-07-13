@@ -51,6 +51,14 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Create debug keystore
+        run: |
+          keytool -genkey -v -keystore app/eta-debug.jks \
+            -storetype PKCS12 -keyalg RSA -keysize 2048 \
+            -validity 10000 -alias androiddebugkey \
+            -storepass android -keypass android \
+            -dname "CN=Android Debug, OU=Android, O=Google, L=Unknown, ST=Unknown, C=US"
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-configuration-cache --stacktrace
 
@@ -63,7 +71,7 @@ jobs:
           compression-level: 0
 
   release:
-    name: Build Release APK
+    name: Build & Release
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-latest
@@ -91,13 +99,33 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build release APK
-        run: ./gradlew assembleRelease --no-configuration-cache --stacktrace
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > app/eta-release.jks
 
-      - name: Upload release APK
-        uses: actions/upload-artifact@v4
+      - name: Build & sign release APK
+        run: ./gradlew assembleRelease --no-configuration-cache --stacktrace
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Get version name
+        id: version
+        run: |
+          VERSION=$(grep 'versionName' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: Eta-release
-          path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
-          compression-level: 0
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Eta v${{ steps.version.outputs.version }}"
+          body_path: CHANGELOG.md
+          fail_on_unmatched_files: false
+          files: |
+            app/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
