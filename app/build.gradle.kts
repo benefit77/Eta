@@ -24,7 +24,7 @@ android {
     }
 
     signingConfigs {
-        create("debug") {
+        create("ci-debug") {
             storeFile = file("eta-debug.jks")
             storePassword = System.getenv("DEBUG_KEYSTORE_PASSWORD") ?: "android"
             keyAlias = System.getenv("DEBUG_KEY_ALIAS") ?: "androiddebugkey"
@@ -43,7 +43,7 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("ci-debug")
             isMinifyEnabled = false
         }
         release {
