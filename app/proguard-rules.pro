@@ -54,34 +54,8 @@
     public void debug(kotlin.jvm.functions.Function0);
 }
 
-# ── DataStore / Preferences ─────────────────────────────────────────────────
--keepclassmembers class * extends androidx.datastore.preferences.protobuf.GeneratedMessageLite {
-    <fields>;
-}
-
-# ── kotlinx.serialization ───────────────────────────────────────────────────
--keepattributes *Annotation*, InnerClasses, EnclosingMethod, Signature, Exceptions, SourceFile, LineNumberTable
--keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
--keepclasseswithmembers class * {
-    @kotlinx.serialization.Serializable <methods>;
-}
--keepclassmembers @kotlinx.serialization.Serializable class ** {
-    *;
-}
--keepclassmembers class **$Companion {
-    kotlinx.serialization.KSerializer serializer(...);
-}
--if @kotlinx.serialization.Serializable class **$Companion
--keepnames class <1>$Companion
-
-# ── OkHttp / Okio ───────────────────────────────────────────────────────────
--dontwarn okhttp3.**
--dontwarn okio.**
--dontwarn org.conscrypt.**
--dontwarn org.bouncycastle.**
--dontwarn org.openjsse.**
--keepattributes Signature
--keepattributes *Annotation*
--keep class okhttp3.** { *; }
--keep interface okhttp3.** { *; }
--keep class okio.** { *; }
+# ── 序列化与网络依赖 ─────────────────────────────────────────────────────────
+# DataStore、kotlinx.serialization、OkHttp 与 Okio 均自带精确的 consumer rules；
+# 不在 App 层重复保留整个类或包，避免阻断裁剪、内联和混淆。
+# 保留源码与行号属性，便于使用 release mapping 还原线上堆栈。
+-keepattributes SourceFile,LineNumberTable
