@@ -88,37 +88,49 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
     ): JSONObject {
         val systemParts = mutableListOf<String>()
         val anthropicMessages = JSONArray()
+        var pendingToolResults: JSONArray? = null
         for (index in 0 until messages.length()) {
             val message = messages.optJSONObject(index) ?: continue
             when (message.optString("role")) {
-                "system" -> extractText(message.opt("content"))
-                    .takeIf { it.isNotBlank() }
-                    ?.let(systemParts::add)
-                "user" -> anthropicMessages.put(
-                    JSONObject()
-                        .put("role", "user")
-                        .put("content", convertUserContent(message.opt("content")))
-                )
-                "assistant" -> anthropicMessages.put(
-                    JSONObject()
-                        .put("role", "assistant")
-                        .put("content", convertAssistantContent(message))
-                )
-                "tool" -> anthropicMessages.put(
-                    JSONObject()
-                        .put("role", "user")
-                        .put(
-                            "content",
-                            JSONArray().put(
-                                JSONObject()
-                                    .put("type", "tool_result")
-                                    .put("tool_use_id", message.optString("tool_call_id"))
-                                    .put("content", message.optString("content"))
-                            )
-                        )
-                )
+                "system" -> {
+                    flushPendingToolResults(anthropicMessages, pendingToolResults)
+                    pendingToolResults = null
+                    extractText(message.opt("content"))
+                        .takeIf { it.isNotBlank() }
+                        ?.let(systemParts::add)
+                }
+                "user" -> {
+                    flushPendingToolResults(anthropicMessages, pendingToolResults)
+                    pendingToolResults = null
+                    anthropicMessages.put(
+                        JSONObject()
+                            .put("role", "user")
+                            .put("content", convertUserContent(message.opt("content")))
+                    )
+                }
+                "assistant" -> {
+                    flushPendingToolResults(anthropicMessages, pendingToolResults)
+                    pendingToolResults = null
+                    anthropicMessages.put(
+                        JSONObject()
+                            .put("role", "assistant")
+                            .put("content", convertAssistantContent(message))
+                    )
+                }
+                "tool" -> {
+                    if (pendingToolResults == null) {
+                        pendingToolResults = JSONArray()
+                    }
+                    pendingToolResults.put(
+                        JSONObject()
+                            .put("type", "tool_result")
+                            .put("tool_use_id", message.optString("tool_call_id"))
+                            .put("content", message.optString("content"))
+                    )
+                }
             }
         }
+        flushPendingToolResults(anthropicMessages, pendingToolResults)
 
         return JSONObject()
             .put("model", config.model)
@@ -132,6 +144,18 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 ProviderReasoning.applyAnthropicRequest(request, config)
                 RequestBodyMerge.mergeCustomBody(request, config.customBody)
             }
+    }
+
+    private fun flushPendingToolResults(
+        anthropicMessages: JSONArray,
+        pending: JSONArray?
+    ) {
+        if (pending == null || pending.length() == 0) return
+        anthropicMessages.put(
+            JSONObject()
+                .put("role", "user")
+                .put("content", pending)
+        )
     }
 
     private fun convertUserContent(content: Any?): JSONArray =
