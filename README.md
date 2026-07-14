@@ -4,13 +4,6 @@
 
 <p align="center">一个第三方 Android 系统级 AI Agent，能操作手机界面，也能像 Coding Agent 一样读文件、跑命令。</p>
 
-<p align="center">
-  <a href="#核心能力">核心能力</a> |
-  <a href="#使用场景">使用场景</a> |
-  <a href="#安装">安装</a> |
-  <a href="#项目结构">项目结构</a>
-</p>
-
 > 底层基于 [libxposed API 102](https://github.com/libxposed/api) 的 Xposed 模块，面向 ColorOS 16。Hook 小布进程拦截对话请求，接入同一套 Agent Runtime，支持 BYOK 自定义模型；**App 本体是主工作台**。此外保留了 system_server、SystemUI、ColorDirectService、Google App 等进程中的早期 Hook 功能（电源键唤醒 Gemini、手势条/双指识屏触发一圈即搜），当前不是重点，后续仍会维护。
 
 ## 界面预览
@@ -151,3 +144,14 @@ config/Prefs.kt            RemotePreferences 配置
 ```
 
 Agent Loop、工具批次、steering 与 transcript 语义见 [docs/AGENT_RUNTIME.md](docs/AGENT_RUNTIME.md)。Gemini、一圈即搜和 RemotePreferences 链路见 [docs/TECHNICAL.md](docs/TECHNICAL.md)。
+
+## 参考与致谢
+
+Eta 的开发过程中参考或关注过以下开源项目：
+
+- [Pi Coding Agent](https://github.com/earendil-works/pi)：Eta Agent Runtime 的核心参考，包括 Agent Loop、工具调用、steering 与 transcript 状态管理
+- [OpenOmniBot](https://github.com/omnimind-ai/OpenOmniBot)：Android 端 AI Agent 方向的参考项目
+
+Eta 结合自身的 Xposed 系统入口、Android Runtime、IPC 与模型协议边界进行了独立实现。
+
+<sub>Community: <a href="https://linux.do">LINUX DO</a></sub>
