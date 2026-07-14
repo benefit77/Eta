@@ -1,29 +1,31 @@
 # macOS 本地文件
 .DS_Store
 
-# IntelliJ / Android Studio 本地工程状态
+# IntelliJ / Android Studio 生成的工程状态
 *.iml
-/.idea/.name
-/.idea/assetWizardSettings.xml
-/.idea/caches/
-/.idea/deploymentTargetSelector.xml
-/.idea/gradle.xml
-/.idea/libraries/
-/.idea/markdown.xml
-/.idea/modules.xml
-/.idea/navEditor.xml
-/.idea/workspace.xml
+/.idea/
 
 # Gradle / Kotlin 构建缓存
 /.gradle/
 /.kotlin/
-/build/
+**/build/
 
 # Android 构建产物
-/.cxx/
-/.externalNativeBuild/
+.cxx/
+.externalNativeBuild/
 /app/release/
-/captures/
+captures/
+*.apk
+*.aab
+output-metadata.json
+*.hprof
+
+# 日志与本地凭据
+*.log
+*.jks
+*.keystore
+keystore.properties
+google-services.json
 
 # 本地配置和临时分析产物
 /local.properties
