@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -42,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
@@ -295,8 +297,8 @@ private fun AgentChatMessages(
         verticalArrangement = Arrangement.Top,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
-            top = 12.dp,
-            bottom = 12.dp + bottomPadding,
+            top = 14.dp,
+            bottom = 14.dp + bottomPadding,
         ),
     ) {
         items(
@@ -402,7 +404,7 @@ private fun AgentChatBottomBar(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(12.dp)
+                .height(16.dp)
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
@@ -417,7 +419,7 @@ private fun AgentChatBottomBar(
                 .fillMaxWidth()
                 .background(MiuixTheme.colorScheme.surface)
                 .navigationBarsPadding()
-                .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
         ) {
             AgentChatInputBar(
                 input = input,
@@ -488,17 +490,17 @@ private fun EmptyChatState(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(start = 24.dp, top = 72.dp, end = 24.dp, bottom = 32.dp),
+            .padding(start = 24.dp, top = 64.dp, end = 24.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.Top,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 painter = painterResource(LucideR.drawable.lucide_ic_sparkles),
                 contentDescription = null,
-                modifier = Modifier.size(17.dp),
+                modifier = Modifier.size(16.dp),
                 tint = MiuixTheme.colorScheme.primary,
             )
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(7.dp))
             Text(
                 text = "Eta Agent",
                 style = MiuixTheme.textStyles.footnote1,
@@ -506,7 +508,7 @@ private fun EmptyChatState(
             )
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text(
             text = "让 Eta 替你完成",
@@ -514,7 +516,7 @@ private fun EmptyChatState(
             color = MiuixTheme.colorScheme.onSurface,
         )
 
-        Spacer(modifier = Modifier.height(7.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Text(
             text = "操作手机、浏览网页，或运行终端任务。",
@@ -522,7 +524,7 @@ private fun EmptyChatState(
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(28.dp))
 
         Column(
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -574,7 +576,7 @@ private fun SuggestionCard(
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        cornerRadius = 14.dp,
+        cornerRadius = 12.dp,
         insideMargin = PaddingValues(0.dp),
         colors = CardDefaults.defaultColors(
             color = MiuixTheme.colorScheme.surfaceContainer,
@@ -584,16 +586,24 @@ private fun SuggestionCard(
         onClick = onClick,
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 15.dp, vertical = 13.dp),
+            modifier = Modifier.padding(horizontal = 15.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                painter = painterResource(item.iconRes),
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
-            Spacer(modifier = Modifier.width(12.dp))
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(item.iconRes),
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                    tint = MiuixTheme.colorScheme.primary,
+                )
+            }
+            Spacer(modifier = Modifier.width(13.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = item.title,
@@ -607,12 +617,6 @@ private fun SuggestionCard(
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             }
-            Icon(
-                painter = painterResource(LucideR.drawable.lucide_ic_chevron_right),
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
         }
     }
 }
