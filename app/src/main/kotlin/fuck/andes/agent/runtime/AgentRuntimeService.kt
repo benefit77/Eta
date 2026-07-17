@@ -15,6 +15,8 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
@@ -42,6 +44,7 @@ import fuck.andes.core.AndroidAgentLogger
 import fuck.andes.core.ModuleConfig
 import fuck.andes.core.safeLogType
 import kotlin.concurrent.thread
+import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.darkColorScheme
 import top.yukonga.miuix.kmp.theme.lightColorScheme
@@ -654,14 +657,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         windowManager = wm
 
         // ── 氛围光窗口：全屏触摸穿透，彩虹光圈，截图时被 takeScreenshotOfWindow 过滤 ─
-        val glow = ComposeView(overlayContext()).apply {
-            setViewTreeLifecycleOwner(this@AgentRuntimeService)
-            setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
-            setContent {
-                MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
-                    AgentOverlayGlow(state = state.value)
-                }
-            }
+        val glow = createOverlayComposeView {
+            AgentOverlayGlow(state = state.value)
         }
         val glowLp = glowLayoutParams()
         runCatching { wm.addView(glow, glowLp) }.onFailure { throwable ->
@@ -673,17 +670,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         glowParams = glowLp
 
         // ── 光球窗口：始终显示，右侧中下 ──────────────────────────────
-        val orb = ComposeView(overlayContext()).apply {
-            setViewTreeLifecycleOwner(this@AgentRuntimeService)
-            setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
-            setContent {
-                MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
-                    AgentOverlayOrb(
-                        state = state.value,
-                        onToggleCollapse = ::toggleCollapse,
-                    )
-                }
-            }
+        val orb = createOverlayComposeView {
+            AgentOverlayOrb(
+                state = state.value,
+                onToggleCollapse = ::toggleCollapse,
+            )
         }
         val orbLp = orbLayoutParams()
         runCatching { wm.addView(orb, orbLp) }.onFailure { throwable ->
@@ -716,22 +707,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun showBubble(wm: WindowManager) {
         if (bubbleView != null) return
-        val bubble = ComposeView(overlayContext()).apply {
-            setViewTreeLifecycleOwner(this@AgentRuntimeService)
-            setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
-            setContent {
-                MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
-                    AgentOverlayBubble(
-                        state = state.value,
-                        onCollapse = ::toggleCollapse,
-                        onPause = ::requestPause,
-                        onResume = ::requestResume,
-                        onStop = ::requestStop,
-                        onSupplementModeChange = ::setBubbleInputMode,
-                        onSupplement = ::requestSupplement,
-                    )
-                }
-            }
+        val bubble = createOverlayComposeView {
+            AgentOverlayBubble(
+                state = state.value,
+                onCollapse = ::toggleCollapse,
+                onPause = ::requestPause,
+                onResume = ::requestResume,
+                onStop = ::requestStop,
+                onSupplementModeChange = ::setBubbleInputMode,
+                onSupplement = ::requestSupplement,
+            )
         }
         val lp = bubbleLayoutParams()
         runCatching { wm.addView(bubble, lp) }.onFailure { throwable ->
@@ -746,17 +731,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun showResultCard(wm: WindowManager) {
         if (resultCardView != null) return
-        val card = ComposeView(overlayContext()).apply {
-            setViewTreeLifecycleOwner(this@AgentRuntimeService)
-            setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
-            setContent {
-                MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
-                    AgentResultCard(
-                        state = state.value,
-                        onClose = ::dismissAndStop,
-                    )
-                }
-            }
+        val card = createOverlayComposeView {
+            AgentResultCard(
+                state = state.value,
+                onClose = ::dismissAndStop,
+            )
         }
         val lp = resultCardLayoutParams()
         runCatching { wm.addView(card, lp) }.onFailure { throwable ->
@@ -768,6 +747,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         resultCardView = card
         resultCardParams = lp
     }
+
+    private fun createOverlayComposeView(content: @Composable () -> Unit): ComposeView =
+        ComposeView(overlayContext()).apply {
+            setViewTreeLifecycleOwner(this@AgentRuntimeService)
+            setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
+            setContent {
+                MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
+                    // 部分 ROM 会给 TYPE_ACCESSIBILITY_OVERLAY 分配软件 Canvas；Miuix 的
+                    // RuntimeShader 只检查系统版本，因此系统浮层统一使用其普通圆角回退。
+                    CompositionLocalProvider(LocalSquircleEnabled provides false) {
+                        content()
+                    }
+                }
+            }
+        }
 
     @Suppress("unused")
     private fun handleDrag(dx: Float, dy: Float) {
@@ -784,7 +778,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -800,7 +795,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -818,7 +814,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             WindowManager.LayoutParams.MATCH_PARENT,
             resultCardWindowHeightPx(),
             overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
@@ -854,7 +851,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             WindowManager.LayoutParams.MATCH_PARENT,
             realHeight,
             overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
