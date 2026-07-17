@@ -4,13 +4,13 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -63,12 +62,9 @@ import fuck.andes.ui.model.ToolActivityMessageUi
 import fuck.andes.ui.model.ToolSummaryMessageUi
 import fuck.andes.ui.model.UserMessageUi
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.utils.PressFeedbackType
 
 /**
  * 聊天主体：消息流 + 底部输入框。
@@ -469,99 +465,78 @@ private fun EmptyChatState(
     val suggestions = listOf(
         SuggestionItem(
             title = "分析当前屏幕",
-            description = "理解界面内容并给出下一步",
             iconRes = LucideR.drawable.lucide_ic_scan_text,
+            iconTint = AccentBlue,
             prompt = "截图并描述当前屏幕",
         ),
         SuggestionItem(
             title = "打开微信",
-            description = "在设备上直接完成操作",
             iconRes = LucideR.drawable.lucide_ic_rocket,
+            iconTint = AccentGreen,
             prompt = "帮我打开微信",
         ),
         SuggestionItem(
+            title = "浏览网页",
+            iconRes = LucideR.drawable.lucide_ic_globe,
+            iconTint = AccentRed,
+            prompt = "打开 Agent 浏览器，搜索并总结今天的科技新闻要点",
+        ),
+        SuggestionItem(
             title = "查看内存压力",
-            description = "运行命令并分析系统状态",
             iconRes = LucideR.drawable.lucide_ic_square_terminal,
+            iconTint = AccentYellow,
             prompt = "读取 /proc/meminfo 和 /proc/pressure/，重点分析 PSI（Pressure Stall Information）指标，总结当前内存压力和系统状态",
         ),
     )
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(start = 24.dp, top = 64.dp, end = 24.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.Top,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                painter = painterResource(LucideR.drawable.lucide_ic_sparkles),
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MiuixTheme.colorScheme.primary,
-            )
-            Spacer(modifier = Modifier.width(7.dp))
-            Text(
-                text = "Eta Agent",
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.primary,
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(
-            text = "让 Eta 替你完成",
-            style = MiuixTheme.textStyles.headline1,
-            color = MiuixTheme.colorScheme.onSurface,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "操作手机、浏览网页，或运行终端任务。",
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-
-        Spacer(modifier = Modifier.height(28.dp))
-
+    Box(modifier = modifier.fillMaxSize()) {
         Column(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(bottom = 56.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            suggestions.forEachIndexed { index, item ->
-                AnimatedVisibility(
-                    visible = showSuggestions,
-                    enter = fadeIn(
-                        animationSpec = tween(
-                            durationMillis = 220,
-                            delayMillis = index * 45,
-                        )
-                    ) + slideInVertically(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow,
-                        ),
-                        initialOffsetY = { it / 3 },
-                    ) + expandVertically(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow,
-                        )
+            Text(
+                text = "有什么可以帮你？",
+                style = MiuixTheme.textStyles.headline1,
+                color = MiuixTheme.colorScheme.onSurface,
+            )
+
+            Spacer(modifier = Modifier.height(30.dp))
+
+            AnimatedVisibility(
+                visible = showSuggestions,
+                enter = fadeIn(
+                    animationSpec = tween(durationMillis = 220)
+                ) + slideInVertically(
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow,
                     ),
-                    exit = fadeOut(
-                        animationSpec = tween(durationMillis = 130)
-                    ) + slideOutVertically(
-                        animationSpec = tween(durationMillis = 180),
-                        targetOffsetY = { -it / 4 },
-                    ) + shrinkVertically(
-                        animationSpec = tween(durationMillis = 180)
-                    ),
+                    initialOffsetY = { it / 3 },
+                ),
+                exit = fadeOut(
+                    animationSpec = tween(durationMillis = 130)
+                ) + slideOutVertically(
+                    animationSpec = tween(durationMillis = 180),
+                    targetOffsetY = { it / 4 },
+                ),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    SuggestionCard(
-                        item = item,
-                        onClick = { onSuggestionClick(item.prompt) },
-                    )
+                    suggestions.chunked(2).forEach { rowItems ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            rowItems.forEach { item ->
+                                SuggestionCard(
+                                    item = item,
+                                    onClick = { onSuggestionClick(item.prompt) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -574,56 +549,43 @@ private fun SuggestionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        cornerRadius = 12.dp,
-        insideMargin = PaddingValues(0.dp),
-        colors = CardDefaults.defaultColors(
-            color = MiuixTheme.colorScheme.surfaceContainer,
-            contentColor = MiuixTheme.colorScheme.onSurface,
-        ),
-        pressFeedbackType = PressFeedbackType.Sink,
-        onClick = onClick,
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MiuixTheme.colorScheme.surface)
+            .border(
+                0.5.dp,
+                MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
+                RoundedCornerShape(12.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 13.dp, vertical = 12.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 15.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.08f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    painter = painterResource(item.iconRes),
-                    contentDescription = null,
-                    modifier = Modifier.size(17.dp),
-                    tint = MiuixTheme.colorScheme.primary,
-                )
-            }
-            Spacer(modifier = Modifier.width(13.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.title,
-                    style = MiuixTheme.textStyles.body1,
-                    color = MiuixTheme.colorScheme.onSurface,
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = item.description,
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
-            }
-        }
+        Icon(
+            painter = painterResource(item.iconRes),
+            contentDescription = null,
+            modifier = Modifier.size(17.dp),
+            tint = item.iconTint,
+        )
+        Spacer(modifier = Modifier.height(9.dp))
+        Text(
+            text = item.title,
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onSurface,
+            maxLines = 1,
+        )
     }
 }
 
+// 建议卡的图标色取自 Eta 启动图标的四色圆点，保持品牌一致。
+private val AccentBlue = Color(0xFF4285F4)
+private val AccentRed = Color(0xFFEA4335)
+private val AccentYellow = Color(0xFFF9AB00)
+private val AccentGreen = Color(0xFF34A853)
+
 private data class SuggestionItem(
     val title: String,
-    val description: String,
     val iconRes: Int,
+    val iconTint: Color,
     val prompt: String,
 )
