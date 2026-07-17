@@ -65,6 +65,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     @Volatile
     private var activeSession: AgentRuntimeSession? = null
+    private var startRequestGeneration = 0L
+    private var pendingStartRequest: PendingStartRequest? = null
+
+    private data class PendingStartRequest(
+        val generation: Long,
+        val incoming: AgentRuntimeWire.IncomingRunRequest,
+        val replyTo: Messenger?,
+    )
 
     private var windowManager: WindowManager? = null
     private var glowView: ComposeView? = null
@@ -116,6 +124,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     override fun onDestroy() {
+        startRequestGeneration++
+        pendingStartRequest?.let { pending ->
+            pending.incoming.close()
+            sendRequestIngestedTo(pending.replyTo, pending.incoming.request.runId)
+            sendResultTo(
+                pending.replyTo,
+                AgentRuntimeWire.RunResult(
+                    runId = pending.incoming.request.runId,
+                    ok = false,
+                    content = "",
+                    error = "Agent Runtime 服务已停止",
+                ),
+            )
+        }
+        pendingStartRequest = null
         activeSession?.cancel("Agent Runtime 服务已停止")
         activeSession = null
         mainHandler.removeCallbacksAndMessages(null)
@@ -138,7 +161,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private inner class IncomingHandler : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
-            if (!isMessageSenderAllowed(msg)) return
+            if (!isMessageSenderAllowed(msg)) {
+                if (msg.what == AgentRuntimeWire.MSG_START_RUN) {
+                    AgentRuntimeWire.closeImageDescriptors(msg.data)
+                }
+                return
+            }
             when (msg.what) {
                 AgentRuntimeWire.MSG_START_RUN -> {
                     val data = msg.data
@@ -146,8 +174,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         finishWithFailure("Agent Runtime 请求缺少消息体", msg.replyTo)
                         return
                     }
-                    val request = runCatching {
-                        AgentRuntimeWire.runRequestFromBundle(data)
+                    val incoming = runCatching {
+                        AgentRuntimeWire.incomingRunRequestFromBundle(data)
                     }.getOrElse { throwable ->
                         AndroidAgentLogger.warnThrottled("runtime_invalid_start_request") {
                             "Agent runtime rejected invalid start request: type=${throwable.safeLogType()}"
@@ -155,19 +183,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         finishWithFailure("Agent Runtime 请求格式无效", msg.replyTo)
                         return
                     }
-                    if (request.runId.isBlank() || (request.prompt.isBlank() && request.images.isEmpty())) {
+                    val request = incoming.request
+                    if (request.runId.isBlank() || (request.prompt.isBlank() && incoming.images.isEmpty())) {
+                        incoming.close()
                         finishWithFailure("Agent Runtime 请求缺少 runId 或用户输入", msg.replyTo)
                         return
                     }
-                    val permissions = AgentRuntimePolicy.permissions(
-                        Prefs.remotePreferencesForUi(FuckAndesApp.serviceInstance)
-                    )
-                    startRun(
-                        request.copy(
-                            config = AgentRuntimePolicy.constrain(request.config, permissions),
-                        ),
-                        msg.replyTo,
-                    )
+                    ingestRunRequest(incoming, msg.replyTo)
                 }
 
                 AgentRuntimeWire.MSG_CANCEL -> {
@@ -185,6 +207,62 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 AgentRuntimeWire.MSG_DRAIN_RESULTS -> {
                     sendDrainedResults(msg.replyTo)
                 }
+            }
+        }
+    }
+
+    private fun ingestRunRequest(
+        incoming: AgentRuntimeWire.IncomingRunRequest,
+        replyTo: Messenger?,
+    ) {
+        val generation = ++startRequestGeneration
+        pendingStartRequest?.let { previous ->
+            previous.incoming.close()
+            sendRequestIngestedTo(previous.replyTo, previous.incoming.request.runId)
+            sendResultTo(
+                previous.replyTo,
+                AgentRuntimeWire.RunResult(
+                    runId = previous.incoming.request.runId,
+                    ok = false,
+                    content = "",
+                    error = "已被新的 Agent 任务替换",
+                ),
+            )
+        }
+        val pending = PendingStartRequest(generation, incoming, replyTo)
+        pendingStartRequest = pending
+        thread(name = "agent-runtime-image-ingest") {
+            val materialized = runCatching {
+                AgentRuntimeImageTransfer.materialize(incoming)
+            }
+            mainHandler.post {
+                if (generation != startRequestGeneration || pendingStartRequest !== pending) return@post
+                pendingStartRequest = null
+                sendRequestIngestedTo(replyTo, incoming.request.runId)
+                materialized.fold(
+                    onSuccess = { request ->
+                        val permissions = AgentRuntimePolicy.permissions(
+                            Prefs.remotePreferencesForUi(FuckAndesApp.serviceInstance)
+                        )
+                        startRun(
+                            request.copy(
+                                config = AgentRuntimePolicy.constrain(request.config, permissions),
+                            ),
+                            replyTo,
+                        )
+                    },
+                    onFailure = { throwable ->
+                        AndroidAgentLogger.warnThrottled("runtime_image_ingest_failed") {
+                            "Agent runtime image ingest failed: type=${throwable.safeLogType()}"
+                        }
+                        finishWithFailure(
+                            (throwable as? AgentRuntimeImageTransfer.ImageTransferException)
+                                ?.message
+                                ?: "Agent Runtime 无法读取图片",
+                            replyTo,
+                        )
+                    },
+                )
             }
         }
     }
@@ -380,6 +458,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
     }
 
+    private fun sendRequestIngestedTo(
+        target: Messenger?,
+        runId: String,
+    ) {
+        runCatching {
+            val msg = Message.obtain(null, AgentRuntimeWire.MSG_REQUEST_INGESTED)
+            msg.data = AgentRuntimeWire.ackBundle(runId)
+            target?.send(msg)
+        }.onFailure { throwable ->
+            AndroidAgentLogger.warnThrottled("runtime_ingest_ack_failed") {
+                "Agent runtime ingest acknowledgement failed: type=${throwable.safeLogType()}"
+            }
+        }
+    }
+
     private fun sendDrainedResults(replyTo: Messenger?) {
         runCatching {
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_DRAIN_RESULTS_RESPONSE)
@@ -456,6 +549,22 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun cancelRun(runId: String) {
         if (runId.isBlank()) return
+        pendingStartRequest?.takeIf { pending -> pending.incoming.request.runId == runId }?.let { pending ->
+            startRequestGeneration++
+            pendingStartRequest = null
+            pending.incoming.close()
+            sendRequestIngestedTo(pending.replyTo, runId)
+            sendResultTo(
+                pending.replyTo,
+                AgentRuntimeWire.RunResult(
+                    runId = runId,
+                    ok = false,
+                    content = "",
+                    error = "已停止",
+                ),
+            )
+            return
+        }
         val session = activeSession ?: return
         if (runId != session.runId) {
             AndroidAgentLogger.debug { "Agent runtime ignored stale cancel request" }

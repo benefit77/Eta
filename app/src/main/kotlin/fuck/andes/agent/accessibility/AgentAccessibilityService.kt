@@ -24,10 +24,24 @@ import fuck.andes.core.AndroidAgentLogger
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import org.json.JSONObject
 
 class AgentAccessibilityService : AccessibilityService() {
+
+    private data class ScreenshotWindow(
+        val id: Int,
+        val layer: Int,
+        val bounds: Rect,
+    )
+
+    private data class NodeTraversalState(
+        val maxVisitedNodes: Int,
+        val activePath: MutableSet<AccessibilityNodeInfo> = hashSetOf(),
+        var visitedNodes: Int = 0,
+        var truncated: Boolean = false,
+    )
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val mainThreadExecutor = Executor { command -> mainHandler.post(command) }
@@ -56,15 +70,40 @@ class AgentAccessibilityService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     fun observe(maxNodes: Int): List<UiNode> {
+        val startedAt = SystemClock.elapsedRealtime()
         val root = rootInActiveWindow ?: return emptyList()
+        val nodeLimit = maxNodes.coerceIn(1, 120)
         val nodes = mutableListOf<IndexedNode>()
-        collectNodes(root, nodes, maxNodes.coerceIn(1, 120))
+        val traversal = NodeTraversalState(
+            maxVisitedNodes = (nodeLimit * UI_TREE_VISIT_MULTIPLIER)
+                .coerceIn(MIN_UI_TREE_VISITED_NODES, MAX_UI_TREE_VISITED_NODES),
+        )
+        collectNodes(
+            node = root,
+            out = nodes,
+            maxNodes = nodeLimit,
+            depth = 0,
+            traversal = traversal,
+        )
         lastNodes = nodes
+        AndroidAgentLogger.debug {
+            "Agent accessibility action=observe_tree nodes=${nodes.size} " +
+                "visited=${traversal.visitedNodes} truncated=${traversal.truncated} " +
+                "elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}"
+        }
         return nodes.map { indexed -> indexed.toUiNode() }
     }
 
     fun currentPackageName(): String? =
         rootInActiveWindow?.packageName?.toString()
+
+    fun displaySize(): Pair<Int, Int>? = runCatching {
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val point = Point()
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.getRealSize(point)
+        if (point.x > 0 && point.y > 0) point.x to point.y else null
+    }.getOrNull()
 
     fun isPackageWindowVisible(packageName: String): Boolean =
         runOnMainSync {
@@ -236,11 +275,11 @@ class AgentAccessibilityService : AccessibilityService() {
      * 截取当前屏幕，排除 TYPE_ACCESSIBILITY_OVERLAY 浮层（glow/orb/bubble/resultCard/GestureIndicator）。
      * 从 agent-runtime 子线程调用；takeScreenshotOfWindow 内部 post 到主线程，
      * callback 经 mainThreadExecutor 回主线程，latch 在子线程等待，不阻塞主线程。
-     * 参考 OpenOmniBot OmniScreenshotAction.captureExcludingOverlaysV14。
      */
     fun captureScreenshotExcludingOverlays(
         excludedPackages: Set<String> = emptySet(),
     ): Bitmap? {
+        val startedAt = SystemClock.elapsedRealtime()
         val allWindows = windows ?: return null
         val wm = getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return null
         val point = Point()
@@ -248,43 +287,69 @@ class AgentAccessibilityService : AccessibilityService() {
         wm.defaultDisplay.getRealSize(point)
         val screenW = point.x
         val screenH = point.y
+        if (screenW <= 0 || screenH <= 0) return null
+        val screenBounds = Rect(0, 0, screenW, screenH)
 
         // 过滤自己的无障碍 overlay 及入口浮窗包，保留应用窗口 + 系统 UI（状态栏等）。
-        val windowPackages = allWindows.associate { window ->
-            val packageName = window.root?.packageName?.toString()
-            window.id to packageName
+        val windowPackages = if (excludedPackages.isEmpty()) {
+            emptyMap()
+        } else {
+            allWindows.associate { window ->
+                window.id to window.root?.packageName?.toString()
+            }
         }
-        val validWindows = allWindows.filter { window ->
-            window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY &&
-                windowPackages[window.id] !in excludedPackages
+        val captureWindows = allWindows.mapNotNull { window ->
+            if (
+                window.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY ||
+                windowPackages[window.id] in excludedPackages
+            ) {
+                return@mapNotNull null
+            }
+            val bounds = Rect().also(window::getBoundsInScreen)
+            if (
+                bounds.width() <= 0 ||
+                bounds.height() <= 0 ||
+                !Rect.intersects(bounds, screenBounds)
+            ) {
+                return@mapNotNull null
+            }
+            ScreenshotWindow(
+                id = window.id,
+                layer = window.layer,
+                bounds = bounds,
+            )
+        }.distinctBy { window -> window.id }.sortedBy { window -> window.layer }
+        if (captureWindows.isEmpty()) {
+            allWindows.forEach { window -> runCatching { window.recycle() } }
+            return null
         }
-        if (validWindows.isEmpty()) return null
 
-        val sorted = validWindows.sortedBy { it.layer }
-        val latch = CountDownLatch(sorted.size)
+        val latch = CountDownLatch(captureWindows.size)
         val screenshots = mutableMapOf<Int, Pair<Bitmap, Rect>>()
         val lock = Any()
-        var successCount = 0
+        val acceptingResults = AtomicBoolean(true)
 
-        for (window in sorted) {
-            val windowId = window.id
+        for (window in captureWindows) {
             runCatching {
-                takeScreenshotOfWindow(windowId, mainThreadExecutor, object : TakeScreenshotCallback {
+                takeScreenshotOfWindow(window.id, mainThreadExecutor, object : TakeScreenshotCallback {
                     override fun onSuccess(screenshot: ScreenshotResult) {
                         try {
                             screenshot.hardwareBuffer.use { hb ->
                                 val bmp = Bitmap.wrapHardwareBuffer(hb, screenshot.colorSpace)
                                 if (bmp != null) {
                                     val sw = convertToSoftwareBitmap(bmp)
-                                    val bounds = Rect()
-                                    window.getBoundsInScreen(bounds)
+                                    if (sw !== bmp && !bmp.isRecycled) bmp.recycle()
+                                    var retained = false
                                     synchronized(lock) {
-                                        screenshots[windowId] = sw to bounds
-                                        successCount++
+                                        if (acceptingResults.get()) {
+                                            screenshots[window.id] = sw to Rect(window.bounds)
+                                            retained = true
+                                        }
                                     }
+                                    if (!retained && !sw.isRecycled) sw.recycle()
                                 }
                             }
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
                             // 单个窗口截图失败不阻断整体
                         } finally {
                             latch.countDown()
@@ -300,22 +365,33 @@ class AgentAccessibilityService : AccessibilityService() {
                 latch.countDown()
             }
         }
-        latch.await(2, TimeUnit.SECONDS)
-        if (successCount == 0) {
-            sorted.forEach { runCatching { it.recycle() } }
-            return null
+        val completed = try {
+            latch.await(2, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
         }
-        // merge 必须在 recycle 之前：merge 内用 window.id 查 screenshots，
-        // recycle 后 window.id 失效会查不到 → 合成全黑
-        val merged = mergeScreenshots(screenshots, sorted, screenW, screenH)
+        acceptingResults.set(false)
+        val captured = synchronized(lock) {
+            screenshots.toMap().also { screenshots.clear() }
+        }
+        val merged = if (captured.isEmpty()) {
+            null
+        } else {
+            mergeScreenshots(captured, captureWindows, screenW, screenH)
+        }
         AndroidAgentLogger.debug {
             "Agent accessibility action=capture_screenshot outcome=merged " +
-                "allWindows=${allWindows.size} validWindows=${validWindows.size} " +
+                "allWindows=${allWindows.size} validWindows=${captureWindows.size} " +
                 "excludedPackages=${excludedPackages.size} " +
-                "success=$successCount screenshots=${screenshots.size} " +
-                "screen=${screenW}x${screenH} merged=${merged?.width}x${merged?.height}"
+                "completed=$completed screenshots=${captured.size} " +
+                "screen=${screenW}x${screenH} merged=${merged?.width}x${merged?.height} " +
+                "elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}"
         }
-        sorted.forEach { runCatching { it.recycle() } }
+        captured.values.forEach { (bitmap, _) ->
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+        allWindows.forEach { window -> runCatching { window.recycle() } }
         return merged
     }
 
@@ -328,13 +404,15 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private fun mergeScreenshots(
         screenshots: Map<Int, Pair<Bitmap, Rect>>,
-        sortedWindows: List<AccessibilityWindowInfo>,
+        sortedWindows: List<ScreenshotWindow>,
         screenWidth: Int,
         screenHeight: Int
     ): Bitmap? {
+        var merged: Bitmap? = null
         return try {
-            val merged = Bitmap.createBitmap(screenWidth, screenHeight, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(merged)
+            val output = Bitmap.createBitmap(screenWidth, screenHeight, Bitmap.Config.ARGB_8888)
+            merged = output
+            val canvas = Canvas(output)
             canvas.drawColor(Color.BLACK)
             for (window in sortedWindows) {
                 val pair = screenshots[window.id] ?: continue
@@ -347,8 +425,9 @@ class AgentAccessibilityService : AccessibilityService() {
                     canvas.drawBitmap(bmp, src, RectF(bounds), null)
                 }
             }
-            merged
-        } catch (e: Exception) {
+            output
+        } catch (_: Exception) {
+            merged?.takeUnless(Bitmap::isRecycled)?.recycle()
             null
         }
     }
@@ -389,41 +468,74 @@ class AgentAccessibilityService : AccessibilityService() {
     private fun collectNodes(
         node: AccessibilityNodeInfo,
         out: MutableList<IndexedNode>,
-        maxNodes: Int
+        maxNodes: Int,
+        depth: Int,
+        traversal: NodeTraversalState,
     ) {
-        if (out.size >= maxNodes) return
-        val bounds = node.bounds()
-        val text = node.text?.toString().orEmpty().take(120)
-        val desc = node.contentDescription?.toString().orEmpty().take(120)
-        val useful = text.isNotBlank() ||
-            desc.isNotBlank() ||
-            node.isClickable ||
-            node.isLongClickable ||
-            node.isScrollable ||
-            node.isFocused ||
-            node.isEditable
-        if (node.isVisibleToUser && bounds.width() > 2 && bounds.height() > 2 && useful) {
-            out += IndexedNode(
-                index = out.size,
-                node = node,
-                text = text,
-                desc = desc,
-                className = node.className?.toString().orEmpty(),
-                packageName = node.packageName?.toString().orEmpty(),
-                viewId = node.viewIdResourceName.orEmpty(),
-                bounds = Rect(bounds),
-                clickable = node.isClickable,
-                longClickable = node.isLongClickable,
-                scrollable = node.isScrollable,
-                focused = node.isFocused,
-                editable = node.isEditable,
-                enabled = node.isEnabled
-            )
+        if (out.size >= maxNodes) {
+            traversal.truncated = true
+            return
         }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            collectNodes(child, out, maxNodes)
-            if (out.size >= maxNodes) return
+        if (depth > MAX_UI_TREE_DEPTH || traversal.visitedNodes >= traversal.maxVisitedNodes) {
+            traversal.truncated = true
+            return
+        }
+        if (!traversal.activePath.add(node)) {
+            traversal.truncated = true
+            return
+        }
+        traversal.visitedNodes++
+        try {
+            // 不可见父节点的后代不会成为可操作目标，尽早裁掉这类大分支。
+            val visible = node.isVisibleToUser
+            if (depth > 0 && !visible) return
+
+            val bounds = node.bounds()
+            val text = node.text?.toString().orEmpty().take(120)
+            val desc = node.contentDescription?.toString().orEmpty().take(120)
+            val clickable = node.isClickable
+            val longClickable = node.isLongClickable
+            val scrollable = node.isScrollable
+            val focused = node.isFocused
+            val editable = node.isEditable
+            val useful = text.isNotBlank() ||
+                desc.isNotBlank() ||
+                clickable ||
+                longClickable ||
+                scrollable ||
+                focused ||
+                editable
+            if (visible && bounds.width() > 2 && bounds.height() > 2 && useful) {
+                out += IndexedNode(
+                    index = out.size,
+                    node = node,
+                    text = text,
+                    desc = desc,
+                    className = node.className?.toString().orEmpty(),
+                    packageName = node.packageName?.toString().orEmpty(),
+                    viewId = node.viewIdResourceName.orEmpty(),
+                    bounds = Rect(bounds),
+                    clickable = clickable,
+                    longClickable = longClickable,
+                    scrollable = scrollable,
+                    focused = focused,
+                    editable = editable,
+                    enabled = node.isEnabled,
+                )
+            }
+            for (index in 0 until node.childCount) {
+                if (
+                    out.size >= maxNodes ||
+                    traversal.visitedNodes >= traversal.maxVisitedNodes
+                ) {
+                    traversal.truncated = true
+                    return
+                }
+                val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
+                collectNodes(child, out, maxNodes, depth + 1, traversal)
+            }
+        } finally {
+            traversal.activePath.remove(node)
         }
     }
 
@@ -547,6 +659,10 @@ class AgentAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val WINDOW_POLL_FALLBACK_MS = 80L
+        private const val MAX_UI_TREE_DEPTH = 24
+        private const val UI_TREE_VISIT_MULTIPLIER = 8
+        private const val MIN_UI_TREE_VISITED_NODES = 128
+        private const val MAX_UI_TREE_VISITED_NODES = 960
 
         @Volatile
         private var instance: AgentAccessibilityService? = null

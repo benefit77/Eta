@@ -9,6 +9,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Rect
+import android.os.SystemClock
 import java.io.IOException
 import java.io.StringReader
 import java.util.concurrent.TimeUnit
@@ -70,9 +71,18 @@ internal class RootShellDeviceController(
     }
 
     fun observe(includeScreenshot: Boolean, includeUiTree: Boolean, maxNodes: Int): Observation {
-        val display = screenSize()
-        val focus = focusedWindow()
         val accessibility = AgentAccessibilityService.current()
+        val display = screenSize()
+        val focus = accessibility
+            ?.currentPackageName()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { packageName ->
+                JSONObject()
+                    .put("package", packageName)
+                    .put("component", packageName)
+                    .put("source", "accessibility")
+            }
+            ?: focusedWindow()
         val nodes = if (includeUiTree) {
             accessibility?.observe(maxNodes.coerceIn(1, 120))?.map { it.toUiNode() }
                 ?.takeIf { it.isNotEmpty() }
@@ -464,12 +474,23 @@ internal class RootShellDeviceController(
         // 天然排除浮层（glow/orb/bubble 等），对 Agent 透明
         val service = AgentAccessibilityService.current()
         if (service != null) {
+            val captureStartedAt = SystemClock.elapsedRealtime()
             val bitmap = runCatching {
                 service.captureScreenshotExcludingOverlays(excludedPackages)
             }.getOrNull()
             if (bitmap != null) {
-                val image = AgentImageCodec.fromBitmap(bitmap, source = "screen")
-                bitmap.recycle()
+                val capturedAt = SystemClock.elapsedRealtime()
+                val image = try {
+                    AgentImageCodec.fromScreenBitmap(bitmap, source = "screen")
+                } finally {
+                    bitmap.recycle()
+                }
+                logger.debug {
+                    "Agent device action=capture_screenshot outcome=completed source=accessibility " +
+                        "capture_ms=${capturedAt - captureStartedAt} " +
+                        "encode_ms=${SystemClock.elapsedRealtime() - capturedAt} " +
+                        "image=${image.width}x${image.height} bytes=${image.bytes}"
+                }
                 if (image.bytes > 0) return image
             }
         }
@@ -493,7 +514,14 @@ internal class RootShellDeviceController(
             )
             return null
         }
-        return AgentImageCodec.fromBytes(result.output, source = "screen")
+        val encodeStartedAt = SystemClock.elapsedRealtime()
+        return AgentImageCodec.fromScreenBytes(result.output, source = "screen").also { image ->
+            logger.debug {
+                "Agent device action=capture_screenshot outcome=completed source=root " +
+                    "encode_ms=${SystemClock.elapsedRealtime() - encodeStartedAt} " +
+                    "image=${image.width}x${image.height} bytes=${image.bytes}"
+            }
+        }
     }
 
     private fun dumpUiNodes(maxNodes: Int): List<UiNode> {
@@ -563,6 +591,7 @@ internal class RootShellDeviceController(
     }
 
     private fun screenSize(): Pair<Int, Int> {
+        AgentAccessibilityService.current()?.displaySize()?.let { return it }
         val result = runSuText("wm size", timeoutSeconds = 5)
         val match = Regex("""Physical size:\s*(\d+)x(\d+)""").find(result.output)
         require(match != null) { "无法读取屏幕尺寸：${result.output.take(160)}" }
