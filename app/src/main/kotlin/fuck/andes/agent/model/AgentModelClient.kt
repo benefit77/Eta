@@ -183,8 +183,9 @@ internal object AgentModelClient {
         val images: List<ModelImage> = emptyList()
     )
 
+    /** 图片引用：入口侧可为本地 URI/路径，进入模型协议前必须解析为远程 URL 或 data URL。 */
     data class ModelImage(
-        val dataUrl: String,
+        val reference: String,
         val mimeType: String,
         val bytes: Int,
         val width: Int? = null,

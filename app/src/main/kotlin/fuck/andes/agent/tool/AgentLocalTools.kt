@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.SystemClock
 import fuck.andes.agent.browser.AgentBrowserSession
 import fuck.andes.agent.browser.BrowserUrlPolicy
 import fuck.andes.agent.device.RootShellDeviceController
@@ -124,7 +125,7 @@ internal class AgentLocalTools(
             content = result.content,
             images = result.images.map { image ->
                 AgentModelClient.ModelImage(
-                    dataUrl = image.dataUrl,
+                    reference = image.dataUrl,
                     mimeType = image.mimeType,
                     bytes = image.bytes,
                     width = image.width,
@@ -136,6 +137,7 @@ internal class AgentLocalTools(
     }
 
     private fun observeScreen(args: JSONObject): AgentModelClient.ToolResult {
+        val startedAt = SystemClock.elapsedRealtime()
         val observation = deviceController.observe(
             includeScreenshot = args.optBoolean("include_screenshot", true),
             includeUiTree = args.optBoolean("include_ui_tree", true),
@@ -145,7 +147,8 @@ internal class AgentLocalTools(
         lastCoordinateSpace = observation.coordinateSpace
         logger.debug {
             "Agent local tool action=observe_screen outcome=completed nodes=${observation.nodes.size} " +
-                "image=${observation.image?.bytes ?: 0}, coordinate=${observation.coordinateSpace?.summary()}"
+                "image=${observation.image?.bytes ?: 0} elapsed_ms=${SystemClock.elapsedRealtime() - startedAt} " +
+                "coordinate=${observation.coordinateSpace?.summary()}"
         }
         return AgentModelClient.ToolResult(
             content = observation.content,

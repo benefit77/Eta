@@ -332,7 +332,7 @@ internal class AgentAppState(
             text = prompt,
             images = pendingImages.map { image ->
                 AgentModelClient.ModelImage(
-                    dataUrl = image.dataUrl,
+                    reference = image.dataUrl,
                     mimeType = image.mimeType,
                     bytes = image.dataUrl.length,
                     source = image.uri,
@@ -383,7 +383,7 @@ internal class AgentAppState(
             }
             val modelImages = pendingImages.map { p ->
                 AgentModelClient.ModelImage(
-                    dataUrl = p.dataUrl,
+                    reference = p.uri,
                     mimeType = p.mimeType,
                     bytes = 0,
                     source = "user_attach",
@@ -412,11 +412,16 @@ internal class AgentAppState(
 
     fun attachImage(uri: String) {
         scope.launch(Dispatchers.IO) {
-            val image = AgentImageCodec.fromReference(appContext, uri, "user_attach") ?: return@launch
+            val image = AgentImageCodec.fromTransferReference(
+                context = appContext,
+                value = uri,
+                source = "user_attach",
+            ) ?: return@launch
+            val preview = AgentImageCodec.previewFromReference(appContext, image) ?: return@launch
             val pending = PendingImageUi(
                 id = "img-${UUID.randomUUID()}",
                 uri = uri,
-                dataUrl = image.dataUrl,
+                dataUrl = preview.reference,
                 mimeType = image.mimeType,
             )
             withContext(Dispatchers.Main) {
