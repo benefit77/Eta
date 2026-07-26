@@ -32,6 +32,11 @@ internal object AgentModelClient {
                 return runtime.copy(
                     terminalTools = Prefs.isEnabled(Prefs.Keys.AGENT_TERMINAL_TOOLS),
                     browserTools = Prefs.isEnabled(Prefs.Keys.AGENT_BROWSER_TOOLS),
+                    deviceDirectTools = Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
+                    deviceSensitiveReadTools =
+                        Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
+                    deviceSensitiveActionTools =
+                        Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
                     thinkingEnabled = Prefs.isEnabled(Prefs.Keys.AGENT_THINKING_ENABLED)
                 )
             }
@@ -52,6 +57,11 @@ internal object AgentModelClient {
             systemPrompt = BuiltinProviders.DEFAULT_SYSTEM_PROMPT,
             terminalTools = Prefs.isEnabled(Prefs.Keys.AGENT_TERMINAL_TOOLS),
             browserTools = Prefs.isEnabled(Prefs.Keys.AGENT_BROWSER_TOOLS),
+            deviceDirectTools = Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
+            deviceSensitiveReadTools =
+                Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
+            deviceSensitiveActionTools =
+                Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
             thinkingEnabled = Prefs.isEnabled(Prefs.Keys.AGENT_THINKING_ENABLED)
         )
     }
@@ -73,6 +83,11 @@ internal object AgentModelClient {
         val tools = AgentToolCatalog.build(
             terminalTools = config.terminalTools,
             browserTools = config.browserTools,
+            deviceDirectTools = config.deviceDirectTools,
+            deviceSensitiveReadTools = config.deviceSensitiveReadTools,
+            deviceSensitiveActionTools = config.deviceSensitiveActionTools,
+            skillGitHubDiscovery = true,
+            skillGitHubInstall = true,
         )
         onEvent(
             AgentEvent.RunStarted(
@@ -100,13 +115,21 @@ internal object AgentModelClient {
             throw AgentModelExecutionException(
                 cause = throwable,
                 reasoningContent = loop.reasoningSnapshot(),
-                transcript = AgentConversationCodec.transcript(messages, transcriptStartIndex),
+                transcript = AgentConversationCodec.transcript(
+                    messages,
+                    transcriptStartIndex,
+                    loop.sensitiveToolCallIdsSnapshot(),
+                ),
             )
         }
         return ModelResponse.Text(
             content = result.content,
             reasoningContent = result.reasoningContent,
-            transcript = AgentConversationCodec.transcript(messages, transcriptStartIndex),
+            transcript = AgentConversationCodec.transcript(
+                messages,
+                transcriptStartIndex,
+                result.sensitiveToolCallIds,
+            ),
         )
     }
 
@@ -152,6 +175,9 @@ internal object AgentModelClient {
         val openAiEndpointMode: String = OpenAiEndpointMode.CHAT_COMPLETIONS,
         val terminalTools: Boolean = false,
         val browserTools: Boolean = true,
+        val deviceDirectTools: Boolean = true,
+        val deviceSensitiveReadTools: Boolean = false,
+        val deviceSensitiveActionTools: Boolean = false,
         val thinkingEnabled: Boolean = false,
         val extraBodyJson: String = "",
         val customHeaders: List<CustomHeader> = emptyList(),
@@ -180,7 +206,12 @@ internal object AgentModelClient {
 
     data class ToolResult(
         val content: String,
-        val images: List<ModelImage> = emptyList()
+        val images: List<ModelImage> = emptyList(),
+        /**
+         * 敏感结果仍会供当前 Agent loop 使用，但工具参数与原始结果不会进入持久会话。
+         * 最终 assistant 自己组织的答复不受此标记影响。
+         */
+        val sensitive: Boolean = false,
     )
 
     /** 图片引用：入口侧可为本地 URI/路径，进入模型协议前必须解析为远程 URL 或 data URL。 */

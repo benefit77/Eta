@@ -7,13 +7,28 @@ internal object AgentToolCatalog {
     fun build(
         terminalTools: Boolean,
         browserTools: Boolean,
+        deviceDirectTools: Boolean = true,
+        deviceSensitiveReadTools: Boolean = false,
+        deviceSensitiveActionTools: Boolean = false,
+        skillGitHubDiscovery: Boolean = false,
+        skillGitHubInstall: Boolean = false,
     ): JSONArray =
         JSONArray().also { tools ->
             AgentContextAppToolCatalog.appendTo(tools)
             AgentGestureToolCatalog.appendTo(tools)
             AgentTextSystemToolCatalog.appendTo(tools)
+            AgentDeviceToolCatalog.appendTo(
+                tools,
+                directTools = deviceDirectTools,
+                sensitiveReadTools = deviceSensitiveReadTools,
+                sensitiveActionTools = deviceSensitiveActionTools,
+            )
             if (browserTools) AgentBrowserToolCatalog.appendTo(tools)
-            AgentSkillToolCatalog.appendTo(tools)
+            AgentSkillToolCatalog.appendTo(
+                tools,
+                githubDiscovery = skillGitHubDiscovery,
+                githubInstall = skillGitHubInstall,
+            )
             if (terminalTools) AgentTerminalToolCatalog.appendTo(tools)
         }
 }

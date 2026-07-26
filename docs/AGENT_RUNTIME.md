@@ -15,7 +15,7 @@ Eta 的 Agent Runtime 负责把一次用户输入组织为模型回合、工具�
 - `AgentRuntimeSession`：每个 run 自持 reply channel，并保证唯一最终结果。
 - `AgentRuntimeRunExecutor`：从 Skill/工具初始化到模型执行、资源清理和终态提交的统一异常边界。
 - `AgentRuntimeService`：Android 生命周期、入口 IPC 和浮层宿主；不再内联 Agent 执行循环。
-- `ShellProcessSupervisor`：Shell 进程的接纳、独立进程组、取消和回收；终端协议不承担进程所有权细节。
+- `ShellProcessSupervisor`：Android/Alpine Shell 进程的接纳、独立进程组、取消和回收；终端协议不承担进程所有权细节。
 
 ## Loop 语义
 
@@ -46,7 +46,19 @@ pending steering
 - cancel 的主线程路径只做原子终态与资源关闭：共享浏览器按 runId 校验归属；终端立即封闭新的进程接纳，并在后台按独立进程组终止同步命令、会话和 async job，再完成线程与流回收。Android 上 `setsid` 或 PID/PGID ownership 握手不可用时会 fail closed；非 Android 测试环境才允许父子树快照回退。终止前还会核验随机 ownership token，避免陈旧 PGID 复用后误杀无关进程。
 - 最终 steering 检查会原子关闭接收入口；Loop 返回后不会再把无人消费的补充指令误报为已接收。补充指令也不会解除 pause。
 - 新 run 替换旧 run、用户取消和正常完成都通过 `AgentRuntimeSession` 的 `RUNNING → COMMITTING → TERMINAL` 状态机竞争唯一终态；提交胜者独占 outbox、归档和最终发布，客户端另有 30 分钟兜底超时。
-- 入口请求只能缩小工具能力，不能自行授权。Runtime 在开始 run 时裁剪配置，在每次浏览器/终端执行前重新读取用户开关，并在 thinking 关闭时移除自定义请求体中的 reasoning/thinking 覆盖字段。
+- 入口请求只能缩小工具能力，不能自行授权。Runtime 在开始 run 时裁剪配置，在每次浏览器、终端和设备工具执行前重新读取用户开关，并在 thinking 关闭时移除自定义请求体中的 reasoning/thinking 覆盖字段。
+- 设备工具分为默认开启的直达工具、默认关闭的敏感读取工具和默认关闭的敏感操作工具。Runtime 在每次执行前重新读取用户开关；开关允许且参数通过 schema 与执行器校验后即可执行，不再用固定关键词二次匹配用户原话。
+- 微信发送只接受精确联系人匹配。同名、页面状态不明确或发送结果无法验证时停止；发送按钮最多点击一次，禁止自动重试或回退为通用点击序列。
+- 通知、短信验证码、Wi‑Fi 凭据、日志和消息正文属于瞬时敏感工具数据。当前模型回合可以使用原始值，但持久 transcript 会同时替换对应工具参数和结果，避免进入会话数据库或后续 IPC。
+
+## 终端环境
+
+`terminal` 的 `environment` 明确区分设备控制与通用 Linux 工具，默认值为 `android`：
+
+- `android` 继续使用系统 Shell。`user` 身份不升级权限；`root` 身份在 `su` 内探测 Magisk、KernelSU、APatch 或系统 BusyBox，并优先进入 standalone `ash`，因此 BusyBox applet 不要求预先加入 PATH。旧 `run_command`、文件读写和目录操作保持这一环境，避免改变既有 Android 路径与命令语义。
+- `linux` 仅允许 `root`，并要求用户先在设置中安装 Eta 管理的 Alpine 环境。每个命令或会话进入独立 mount namespace，挂载必要的 `/proc`、`/dev` 以及可用的共享存储后再 chroot；进程结束时命名空间一并销毁，不把 bind mount 留在 Android 全局。chroot 只提供 Linux userland，不构成安全沙箱。
+
+安装器只接受代码中固定版本、大小和 SHA-256 的 Alpine 官方 minirootfs，先在临时目录校验并解压，再原子替换 App 私有 rootfs。常用工具安装完成前不会写入完成标记；失败后可继续安装。终端/文件工具开关仍默认关闭，安装环境不会自行授权模型使用终端。
 
 状态机语义研究参考了 MIT 许可的 [earendil-works/pi（研究时固定提交）](https://github.com/earendil-works/pi/tree/4c1861033b63a04563547ccdb5ed2bf31d4fdcd3)，Eta 按 Android Runtime、既有 IPC 和 Provider 协议做 Kotlin clean rewrite，没有直接引入其 TypeScript 运行时。
 
@@ -66,6 +78,18 @@ App 在发起请求前已经把当前用户消息写入会话 history，因此 R
 浮层在已完成结果后发起的 continuation 会在 handoff 中只携带本次新增的 prompt supplement，不累计复制旧补充。App 回到前台时 drain outbox，把该用户消息和增量 transcript 一起写回 history。
 
 自动重试、上下文压缩和跨 Provider 的 opaque reasoning 状态尚未由当前 Loop 冒充实现；它们应位于 Loop 之外的 session 编排层，并各自拥有明确的持久化与测试合同。
+
+## Skills 安装边界
+
+Skill 安装工具始终向模型提供，不再根据顶层用户输入的固定关键词决定是否暴露或执行。网页、仓库 README 和已安装 Skill 仍只是数据，不能改变工具参数或执行边界。
+
+- AI 安装只访问公开 GitHub HTTPS 地址；curated 默认来自 `openai/skills` 的 `skills/.curated`。安装路径必须来自当前 run 对同一仓库与 ref 的检查结果，最多 20 个。
+- 本地 ZIP 由 Skills 页面通过系统文件选择器读取，不申请共享存储权限，也不把归档复制到公开目录；每个 ZIP 只允许包含一个 Skill。
+- GitHub 下载与本地 ZIP 共用受限解包和校验流程：拒绝路径穿越、绝对路径、重复条目、嵌套 Skill、非法 frontmatter，以及超过条目数、单文件、归档或总解压预算的输入。
+- 安装先在 App 私有临时目录完整验证，再提交到正式 Skills 目录。文件系统与 Room 变更由持久事务日志协调，进程异常退出后会在下次变更前恢复；批量安装任一步失败都会回滚。同名用户 Skill 默认保持不变；GitHub 单冲突替换绑定仓库、提交、路径和 Skill ID，可在同一 run 精确重试；内置 Skill 永远不能被导入包覆盖。
+- 安装只保存文件、登记索引并默认启用，不执行 `scripts/`，也不改变终端/文件工具开关。本轮 Skill 索引在模型调用前已经冻结，因此新 Skill 从下一轮对话开始可用。
+
+已安装 Skill 的附属文本资源通过独立的有界读取工具访问，读取时再次做相对路径、canonical root、UTF-8 与大小检查；脚本和二进制 asset 不会借此被执行或当作无限文本送入上下文。
 
 待确认结果和外部入口归档会把 transcript 一并写入 Room。数据库 6 → 7 使用显式非破坏迁移为旧记录补 transcript，7 → 8 为会话增加已应用 run 标记。恢复幂等性不再靠比较 history 尾部猜测；保存任务严格按调用顺序串行，只有包含对应标记的快照落盘后才 ACK outbox。旧 6.x 结果仍可用已有 assistant 内容合成兼容 history。
 

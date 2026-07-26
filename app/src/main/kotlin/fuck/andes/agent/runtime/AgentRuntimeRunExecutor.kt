@@ -1,12 +1,18 @@
 package fuck.andes.agent.runtime
 
 import android.content.Context
+import fuck.andes.agent.accessibility.AgentAccessibilityKeeper
 import fuck.andes.agent.model.AgentModelClient
 import fuck.andes.agent.model.AgentModelExecutionException
+import fuck.andes.agent.model.AgentHttpClient
+import fuck.andes.agent.overlay.AgentOverlayVisibilityPolicy
 import fuck.andes.agent.skill.SkillCompatibilityChecker
 import fuck.andes.agent.skill.SkillContext
 import fuck.andes.agent.skill.SkillRuntime
+import fuck.andes.agent.skill.PublicGitHubSkillSource
 import fuck.andes.agent.tool.AgentLocalTools
+import fuck.andes.agent.tool.PendingSkillConflictCapabilityParser
+import fuck.andes.agent.tool.ToolExecutionDecision
 import fuck.andes.core.AndroidAgentLogger
 import fuck.andes.core.safeLogType
 
@@ -54,10 +60,17 @@ internal class AgentRuntimeRunExecutor(
             entrySurfaceGuard = EntrySurfaceGuard.from(request.handoff, AndroidAgentLogger)
             val skillIndexService = SkillRuntime.createIndexService(appContext)
             val skillLoader = SkillRuntime.createLoader(appContext)
+            val skillResourceReader = SkillRuntime.createResourceReader(appContext)
+            val skillPackageInstaller = SkillRuntime.createPackageInstaller(appContext)
+            val githubSkillSource = PublicGitHubSkillSource(
+                cacheRoot = appContext.cacheDir,
+                baseClient = AgentHttpClient.client,
+            )
             val skillContext = SkillContext(
                 installedSkills = skillIndexService.listInstalledSkills()
                     .filter { SkillCompatibilityChecker.evaluate(it).available },
             )
+            val pendingSkillConflict = PendingSkillConflictCapabilityParser.parse(request.history)
             val executor = AgentLocalTools(
                 context = appContext,
                 logger = AndroidAgentLogger,
@@ -68,11 +81,56 @@ internal class AgentRuntimeRunExecutor(
                 terminalToolsEnabled = {
                     request.config.terminalTools && currentPermissions().terminalTools
                 },
+                deviceDirectToolsEnabled = {
+                    request.config.deviceDirectTools && currentPermissions().deviceDirectTools
+                },
+                deviceSensitiveReadToolsEnabled = {
+                    request.config.deviceSensitiveReadTools &&
+                        currentPermissions().deviceSensitiveReadTools
+                },
+                deviceSensitiveActionToolsEnabled = {
+                    request.config.deviceSensitiveActionTools &&
+                        currentPermissions().deviceSensitiveActionTools
+                },
                 screenshotExcludedPackages = {
                     entrySurfaceGuard?.consumeScreenshotExcludedPackages().orEmpty()
                 },
+                beforeToolExecution = { toolName ->
+                    val requiresAccessibility =
+                        AgentOverlayVisibilityPolicy.isForegroundOperationTool(toolName)
+                    if (
+                        !requiresAccessibility &&
+                        !AgentOverlayVisibilityPolicy.requiresEntrySurfaceDismissal(toolName)
+                    ) {
+                        ToolExecutionDecision.Allow
+                    } else {
+                        val accessibility = if (requiresAccessibility) {
+                            AgentAccessibilityKeeper.ensureEnabledForGuiOperation(appContext)
+                        } else {
+                            null
+                        }
+                        when {
+                            accessibility != null && !accessibility.available ->
+                                ToolExecutionDecision.Reject(
+                                    code = accessibility.code,
+                                    message = accessibility.message,
+                                )
+                            entrySurfaceGuard?.dismissOnce() == false ->
+                                ToolExecutionDecision.Reject(
+                                    code = "ENTRY_SURFACE_NOT_READY",
+                                    message = "入口窗口尚未确认关闭；本次工具未执行，请稍后重试",
+                                )
+                            else -> ToolExecutionDecision.Allow
+                        }
+                    }
+                },
                 skillIndexService = skillIndexService,
                 skillLoader = skillLoader,
+                skillResourceReader = skillResourceReader,
+                githubSkillSource = githubSkillSource,
+                skillPackageInstaller = skillPackageInstaller,
+                runAvailableSkillIds = skillContext.installedSkills.mapTo(mutableSetOf()) { it.id },
+                pendingSkillConflict = pendingSkillConflict,
             )
             toolExecutor = executor
             toolsBinding = runController.register(executor::close)
