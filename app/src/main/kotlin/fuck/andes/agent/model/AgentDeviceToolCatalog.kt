@@ -166,18 +166,6 @@ internal object AgentDeviceToolCatalog {
                     "package_name", "action",
                 ),
             )
-            .put(
-                function(
-                    "send_message",
-                    "通过 Eta 无障碍服务在微信中精确查找联系人并填写或真正发送消息。只接受精确联系人；同名时拒绝。mode=send 会点击一次发送并验证，失败或结果未知时绝不自动重试，也不要改用 tap/input_text 重放。",
-                    properties(
-                        "contact" to string("微信联系人，必须精确匹配", 64),
-                        "message" to string("消息正文", 2_000),
-                        "mode" to enumString("draft 只填入，send 真正发送", "draft", "send"),
-                    ),
-                    "contact", "message", "mode",
-                ),
-            )
     }
 
     private fun emptyFunction(name: String, description: String): JSONObject =

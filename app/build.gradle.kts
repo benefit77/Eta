@@ -5,6 +5,17 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val releaseStoreFile = System.getenv("ETA_RELEASE_STORE_FILE")
+val releaseStorePassword = System.getenv("ETA_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("ETA_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("ETA_RELEASE_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+).all { !it.isNullOrBlank() }
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
@@ -30,14 +41,13 @@ android {
             keyAlias = System.getenv("DEBUG_KEY_ALIAS") ?: "androiddebugkey"
             keyPassword = System.getenv("DEBUG_KEY_PASSWORD") ?: "android"
         }
-        create("release") {
-            storeFile = file("eta-release.jks")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "EtaRelease"
-            keyAlias = System.getenv("KEY_ALIAS") ?: "eta"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "EtaRelease"
-            enableV1Signing = true
-            enableV2Signing = true
-            enableV3Signing = true
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseStoreFile))
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
@@ -47,7 +57,7 @@ android {
             isMinifyEnabled = false
         }
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

@@ -182,28 +182,6 @@ internal object ToolArgumentContract {
                 values = setOf("force_stop", "freeze", "unfreeze"),
             ),
         ),
-        "send_message" to listOf(
-            Field(
-                "contact",
-                Kind.STRING,
-                required = true,
-                nonBlank = true,
-                maximumLength = 64,
-            ),
-            Field(
-                "message",
-                Kind.STRING,
-                required = true,
-                nonBlank = true,
-                maximumLength = 2_000,
-            ),
-            Field(
-                "mode",
-                Kind.STRING,
-                required = true,
-                values = setOf("draft", "send"),
-            ),
-        ),
         "skills_inspect_github" to listOf(
             Field(
                 "repository",
