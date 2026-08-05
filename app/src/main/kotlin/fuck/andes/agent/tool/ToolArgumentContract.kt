@@ -152,12 +152,58 @@ internal object ToolArgumentContract {
             Field("package_name", Kind.STRING, maximumLength = 255),
             Field("limit", Kind.INTEGER, minimum = 1, maximum = 20),
         ),
+        "search_notification_history" to listOf(
+            Field("query", Kind.STRING, maximumLength = 200),
+            Field("package_name", Kind.STRING, maximumLength = 255),
+            Field("max_age_hours", Kind.INTEGER, minimum = 1, maximum = 168),
+            Field("limit", Kind.INTEGER, minimum = 1, maximum = 50),
+        ),
+        "recent_app_activity" to listOf(
+            Field("package_name", Kind.STRING, maximumLength = 255),
+            Field("max_age_hours", Kind.INTEGER, minimum = 1, maximum = 168),
+            Field("limit", Kind.INTEGER, minimum = 1, maximum = 50),
+        ),
+        "app_usage_summary" to listOf(
+            Field("max_age_hours", Kind.INTEGER, minimum = 1, maximum = 168),
+            Field("limit", Kind.INTEGER, minimum = 1, maximum = 50),
+        ),
+        "list_alarms" to listOf(
+            Field("enabled_only", Kind.BOOLEAN),
+            Field("limit", Kind.INTEGER, minimum = 1, maximum = 50),
+        ),
+        "list_active_timers" to listOf(
+            Field("limit", Kind.INTEGER, minimum = 1, maximum = 50),
+        ),
+        "get_health_summary" to listOf(
+            Field("days", Kind.INTEGER, minimum = 1, maximum = 30),
+        ),
         "read_sms_code" to listOf(
             Field("max_age_minutes", Kind.INTEGER, minimum = 1, maximum = 1_440),
         ),
         "get_logcat" to listOf(
             Field("query", Kind.STRING, maximumLength = 200),
             Field("max_lines", Kind.INTEGER, minimum = 20, maximum = 500),
+        ),
+        "search_media" to personalSearchFields(),
+        "search_audio" to personalSearchFields(),
+        "search_recordings" to personalSearchFields(),
+        "search_files" to personalSearchFields(),
+        "search_calendar_events" to personalSearchFields(),
+        "search_contacts" to personalSearchFields(),
+        "search_call_history" to personalSearchFields(),
+        "search_messages" to personalSearchFields(),
+        "search_downloads" to personalSearchFields(),
+        "search_coloros_notes" to personalSearchFields(),
+        "search_coloros_recordings" to personalSearchFields(),
+        "search_recording_summaries" to personalSearchFields(),
+        "search_coloros_memories" to personalSearchFields(),
+        "search_saved_places" to personalSearchFields(),
+        "search_personal_orders" to personalSearchFields(),
+        "search_clipboard_history" to personalSearchFields(),
+        "search_qq_chat_images" to personalSearchFields(),
+        "search_wechat_chat_images" to personalSearchFields(),
+        "read_image" to listOf(
+            Field("path", Kind.STRING, required = true, nonBlank = true, maximumLength = 1_024),
         ),
         "set_device_state" to listOf(
             Field(
@@ -473,6 +519,11 @@ internal object ToolArgumentContract {
             add(Field("value", Kind.STRING, required = true, maximumLength = 2_000))
         }
     }
+
+    private fun personalSearchFields(): List<Field> = listOf(
+        Field("query", Kind.STRING, maximumLength = 200),
+        Field("limit", Kind.INTEGER, minimum = 1, maximum = 30),
+    )
 
     private val EDITABLE_TOOLS = setOf("input_text", "replace_text", "clear_text")
     private val REPEAT_DAYS = setOf("mon", "tue", "wed", "thu", "fri", "sat", "sun")

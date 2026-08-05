@@ -28,8 +28,11 @@ import fuck.andes.agent.skill.SkillRuntime
 import fuck.andes.config.Prefs
 import fuck.andes.core.AndroidAgentLogger
 import fuck.andes.core.safeLogType
-import fuck.andes.data.repository.RuntimeConfigRepository
+import fuck.andes.data.model.ModelReasoningCapabilities
+import fuck.andes.data.model.ReasoningEffort
 import fuck.andes.data.repository.AgentMemoryRepository
+import fuck.andes.data.repository.ProviderRepository
+import fuck.andes.data.repository.RuntimeConfigRepository
 import fuck.andes.ui.model.AgentChatHomeUiState
 import fuck.andes.ui.model.AgentChatMessageUi
 import fuck.andes.ui.model.AgentMessageUi
@@ -64,6 +67,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -88,6 +94,7 @@ internal class AgentAppState(
     private var skillNoticeSequence = 0L
     private var pendingSkillZipUri: Uri? = null
     private var pendingSkillZipSha256: String? = null
+    private var currentReasoningCapabilities: ModelReasoningCapabilities? = null
 
     private var selectedConversationId: String? = initialConversations.selectedConversationId
     private var conversationsById: Map<String, AgentChatHomeUiState> = initialConversations.conversationsById
@@ -125,6 +132,7 @@ internal class AgentAppState(
 
     init {
         refreshConversationSummaries()
+        observeReasoningCapabilities()
         runtimeRecoveryInProgress.set(true)
         scope.launch(Dispatchers.IO) {
             try {
@@ -134,6 +142,44 @@ internal class AgentAppState(
                 runtimeRecoveryInProgress.set(false)
             }
         }
+    }
+
+    private fun observeReasoningCapabilities() {
+        scope.launch(Dispatchers.IO) {
+            combine(
+                RuntimeConfigRepository.selectedProviderIdFlow(),
+                RuntimeConfigRepository.selectedModelIdFlow(),
+                ProviderRepository.providersFlow(),
+            ) { providerId, modelId, providers ->
+                Triple(providerId, modelId, providers.hashCode())
+            }
+                .distinctUntilChanged()
+                .collectLatest {
+                    val capabilities = RuntimeConfigRepository.currentRuntimeConfig()
+                        ?.reasoningCapabilities
+                    withContext(Dispatchers.Main) {
+                        applyReasoningCapabilities(capabilities)
+                    }
+                }
+        }
+    }
+
+    private fun applyReasoningCapabilities(capabilities: ModelReasoningCapabilities?) {
+        currentReasoningCapabilities = capabilities
+        val next = homeState.withCurrentReasoningCapabilities()
+        val changed = next.reasoningEffort != homeState.reasoningEffort ||
+            next.availableReasoningEfforts != homeState.availableReasoningEfforts
+        updateCurrentConversation(next)
+        if (changed && selectedConversationId != null) persistConversations()
+    }
+
+    private fun AgentChatHomeUiState.withCurrentReasoningCapabilities(): AgentChatHomeUiState {
+        val normalized = currentReasoningCapabilities?.normalize(reasoningEffort) ?: ReasoningEffort.OFF
+        return copy(
+            thinkingEnabled = normalized.enablesReasoning,
+            reasoningEffort = normalized,
+            availableReasoningEfforts = currentReasoningCapabilities?.selectableEfforts.orEmpty(),
+        )
     }
 
     fun refreshRuntimeResults() {
@@ -357,9 +403,12 @@ internal class AgentAppState(
             source = archivedRun.handoff.source,
             conversationKey = payload.conversationKey,
         )
+        val archivedEffort = payload.reasoningEffort
+            ?: payload.thinkingEnabled?.let(ReasoningEffort::fromLegacy)
+            ?: ReasoningEffort.fromLegacy(defaultThinkingEnabled)
         val existingState = conversationsById[conversationId] ?: emptyChatState(
-            payload.thinkingEnabled ?: defaultThinkingEnabled
-        )
+            archivedEffort.enablesReasoning
+        ).copy(reasoningEffort = archivedEffort)
         val alreadyImported = AgentRuntimeHistoryReducer.wasApplied(existingState, runId) ||
             existingState.messages.any {
                 it is AgentMessageUi &&
@@ -377,7 +426,8 @@ internal class AgentAppState(
             existingState.copy(
                 input = "",
                 isStreaming = true,
-                thinkingEnabled = payload.thinkingEnabled ?: existingState.thinkingEnabled,
+                thinkingEnabled = archivedEffort.enablesReasoning,
+                reasoningEffort = archivedEffort,
                 pendingImages = emptyList(),
                 messages = existingState.messages +
                     UserMessageUi(id = "user-$runId", content = payload.userText) +
@@ -400,7 +450,17 @@ internal class AgentAppState(
     }
 
     fun updateThinkingEnabled(enabled: Boolean) {
-        updateCurrentConversation(homeState.copy(thinkingEnabled = enabled))
+        updateReasoningEffort(ReasoningEffort.fromLegacy(enabled))
+    }
+
+    fun updateReasoningEffort(effort: ReasoningEffort) {
+        val normalized = currentReasoningCapabilities?.normalize(effort) ?: ReasoningEffort.OFF
+        updateCurrentConversation(
+            homeState.copy(
+                thinkingEnabled = normalized.enablesReasoning,
+                reasoningEffort = normalized,
+            )
+        )
         if (selectedConversationId != null) persistConversations()
     }
 
@@ -411,14 +471,22 @@ internal class AgentAppState(
     fun selectConversation(conversationId: String) {
         val state = conversationsById[conversationId] ?: return
         selectedConversationId = conversationId
-        homeState = state
+        val normalized = currentReasoningCapabilities?.normalize(state.reasoningEffort)
+            ?: ReasoningEffort.OFF
+        val resolvedState = state.copy(
+            thinkingEnabled = normalized.enablesReasoning,
+            reasoningEffort = normalized,
+            availableReasoningEfforts = currentReasoningCapabilities?.selectableEfforts.orEmpty(),
+        )
+        conversationsById = conversationsById + (conversationId to resolvedState)
+        homeState = resolvedState
         conversationPaneState = conversationPaneState.copy(selectedConversationId = conversationId)
         persistConversations()
     }
 
     fun createConversation() {
         selectedConversationId = null
-        homeState = emptyChatState(defaultThinkingEnabled)
+        homeState = emptyChatState(defaultThinkingEnabled).withCurrentReasoningCapabilities()
         conversationPaneState = conversationPaneState.copy(
             selectedConversationId = null,
             searchQuery = "",
@@ -435,10 +503,11 @@ internal class AgentAppState(
             val nextId = conversationsById.keys.firstOrNull()
             if (nextId != null) {
                 selectedConversationId = nextId
-                homeState = conversationsById.getValue(nextId)
+                homeState = conversationsById.getValue(nextId).withCurrentReasoningCapabilities()
+                conversationsById = conversationsById + (nextId to homeState)
             } else {
                 selectedConversationId = null
-                homeState = emptyChatState(defaultThinkingEnabled)
+                homeState = emptyChatState(defaultThinkingEnabled).withCurrentReasoningCapabilities()
             }
         }
         conversationPaneState = conversationPaneState.copy(selectedConversationId = selectedConversationId)
@@ -468,7 +537,7 @@ internal class AgentAppState(
             selectedConversationId = it
         }
         val history = homeState.history
-        val thinkingEnabled = homeState.thinkingEnabled
+        val reasoningEffort = homeState.reasoningEffort
         val runId = "run-${UUID.randomUUID()}"
         val imageDataUrls = pendingImages.map { it.dataUrl }
         val userMessage = UserMessageUi(id = "user-$runId", content = prompt, images = imageDataUrls)
@@ -507,6 +576,13 @@ internal class AgentAppState(
         persistConversations()
 
         currentRunJob = scope.launch(Dispatchers.IO) {
+            val permittedReasoningEffort = if (
+                remoteBooleanForUi(Prefs.Keys.AGENT_THINKING_ENABLED)
+            ) {
+                reasoningEffort
+            } else {
+                ReasoningEffort.OFF
+            }
             val config = RuntimeConfigRepository.currentRuntimeConfig()?.copy(
                 terminalTools = remoteBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
                 browserTools = remoteBooleanForUi(Prefs.Keys.AGENT_BROWSER_TOOLS),
@@ -515,7 +591,8 @@ internal class AgentAppState(
                     remoteBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
                 deviceSensitiveActionTools =
                     remoteBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
-                thinkingEnabled = thinkingEnabled,
+                thinkingEnabled = permittedReasoningEffort.enablesReasoning,
+                reasoningEffort = permittedReasoningEffort,
             )
             if (config == null) {
                 withContext(Dispatchers.Main) {
@@ -1293,7 +1370,9 @@ internal class AgentAppState(
         selectedConversationId = null
         homeState = emptyChatState(defaultThinkingEnabled).copy(
             input = draft.input,
-            thinkingEnabled = draft.thinkingEnabled,
+            thinkingEnabled = draft.reasoningEffort.enablesReasoning,
+            reasoningEffort = draft.reasoningEffort,
+            availableReasoningEfforts = currentReasoningCapabilities?.selectableEfforts.orEmpty(),
             pendingImages = draft.pendingImages,
         )
         conversationPaneState = conversationPaneState.copy(selectedConversationId = null)
@@ -1498,12 +1577,51 @@ private fun buildToolsState(): AgentToolsUiState =
                 tools = listOf(
                     ToolItemUi("read_sms_code", "读取验证码", "只提取最近短信中的验证码"),
                     ToolItemUi("recent_notifications", "读取通知", "读取当前通知标题与正文"),
+                    ToolItemUi("search_notification_history", "通知历史", "检索授权后本机保存的最近 7 天通知"),
+                    ToolItemUi("recent_app_activity", "最近应用", "查看最近打开过的应用和时间"),
+                    ToolItemUi("app_usage_summary", "应用使用统计", "按前台时长汇总近期应用使用"),
+                    ToolItemUi("get_current_location", "当前位置", "读取系统已有的最近位置"),
+                    ToolItemUi("get_device_environment", "设备环境", "读取锁屏、勿扰、音频输出和外接屏状态"),
+                    ToolItemUi("list_alarms", "闹钟计划", "读取时钟中已创建的闹钟"),
+                    ToolItemUi("list_active_timers", "活动计时器", "读取正在运行或暂停的计时器"),
+                    ToolItemUi("search_clipboard_history", "剪贴板历史", "检索系统输入法保存的剪贴板内容"),
+                    ToolItemUi("get_health_summary", "健康摘要", "汇总步数、睡眠、运动和身体指标"),
                     ToolItemUi("wifi_credentials", "Wi‑Fi 密码", "读取手机保存的网络凭据"),
                     ToolItemUi("get_setting", "读取系统设置", "读取指定 Settings 键"),
                     ToolItemUi("set_setting", "修改系统设置", "修改非安全关键 Settings 键"),
                     ToolItemUi("set_device_state", "网络开关", "直接控制 Wi‑Fi 或蓝牙"),
                     ToolItemUi("app_state_control", "应用状态", "停止、冻结或解冻应用"),
                     ToolItemUi("get_logcat", "系统日志", "有界读取并过滤最近日志"),
+                ),
+            ),
+            ToolGroupUi(
+                id = "personal_data",
+                title = "个人数据直达",
+                tools = listOf(
+                    ToolItemUi("search_media", "相册图片", "按文件名或相册路径检索图片"),
+                    ToolItemUi("search_audio", "音频文件", "按标题、文件名或作者检索音频"),
+                    ToolItemUi("search_recordings", "系统录音", "从系统媒体库检索录音文件"),
+                    ToolItemUi("search_files", "共享文件", "检索文档和共享存储中的文件"),
+                    ToolItemUi("search_calendar_events", "日历事件", "按标题、地点或说明检索日程"),
+                    ToolItemUi("search_contacts", "通讯录", "检索联系人姓名与打开地址"),
+                    ToolItemUi("search_call_history", "通话记录", "按号码或联系人名称检索通话"),
+                    ToolItemUi("search_messages", "短信", "按发送方或正文关键词检索短信"),
+                    ToolItemUi("search_downloads", "下载记录", "检索系统下载任务和文件"),
+                    ToolItemUi("search_coloros_notes", "ColorOS 便签", "检索便签、待办及正文内容"),
+                    ToolItemUi("search_coloros_recordings", "ColorOS 录音", "检索普通录音与通话录音"),
+                    ToolItemUi("search_recording_summaries", "录音摘要", "检索录音关联的转写摘要和便签"),
+                    ToolItemUi("search_coloros_memories", "ColorOS 系统记忆", "检索已收集的信息及其结构化关联内容"),
+                    ToolItemUi("search_saved_places", "保存地点", "检索系统记忆中的地点信息"),
+                    ToolItemUi("search_personal_orders", "个人订单", "检索外卖、购物、快递、票券和出行订单"),
+                    ToolItemUi("search_qq_chat_images", "QQ 聊天图片", "检索 QQ 聊天图片缓存中的最近图片"),
+                    ToolItemUi("search_wechat_chat_images", "微信聊天图片", "检索微信聊天图片缓存中的最近图片"),
+                ),
+            ),
+            ToolGroupUi(
+                id = "file_vision",
+                title = "文件视觉",
+                tools = listOf(
+                    ToolItemUi("read_image", "读取图片", "读取已知路径的图片并交给视觉模型解读"),
                 ),
             ),
             ToolGroupUi(
@@ -1535,6 +1653,8 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
     val accessibilityEnabled = isAgentAccessibilityEnabled(context) || AgentAccessibilityService.isAvailable()
     val rootEnabled = isRootAvailable()
     val locationAccess = DeviceLocationProvider.accessState(context)
+    val notificationHistoryEnabled = fuck.andes.agent.device.AgentNotificationHistoryService.isEnabled(context)
+    val usageAccessEnabled = fuck.andes.agent.tool.AgentPersonalContextTools.hasUsageAccess(context)
 
     return PermissionHealthUiState(
         items = listOf(
@@ -1580,6 +1700,24 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
                     DeviceLocationProvider.AccessState.DISABLED -> "去开启"
                     DeviceLocationProvider.AccessState.AVAILABLE -> null
                 },
+            ),
+            PermissionHealthItemUi(
+                id = "notification_history",
+                title = "通知使用权",
+                summary = if (notificationHistoryEnabled) {
+                    "本机有界保存最近 7 天通知，仅在工具调用时读取"
+                } else {
+                    "授权后开始记录可检索的通知历史"
+                },
+                status = if (notificationHistoryEnabled) PermissionStatusUi.Available else PermissionStatusUi.Missing,
+                primaryActionLabel = if (notificationHistoryEnabled) null else "去授权",
+            ),
+            PermissionHealthItemUi(
+                id = "usage_access",
+                title = "使用情况访问",
+                summary = "用于读取最近打开的应用和前台使用时长",
+                status = if (usageAccessEnabled) PermissionStatusUi.Available else PermissionStatusUi.Missing,
+                primaryActionLabel = if (usageAccessEnabled) null else "去授权",
             ),
             PermissionHealthItemUi(
                 id = "accessibility",

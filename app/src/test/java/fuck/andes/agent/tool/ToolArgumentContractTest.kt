@@ -7,6 +7,63 @@ import org.junit.Test
 
 class ToolArgumentContractTest {
     @Test
+    fun `personal search bounds query and limit`() {
+        assertEquals(
+            "query",
+            ToolArgumentContract.validate(
+                "search_messages",
+                JSONObject().put("query", "x".repeat(201)),
+            )?.field,
+        )
+        assertEquals(
+            "limit",
+            ToolArgumentContract.validate(
+                "search_media",
+                JSONObject().put("limit", 31),
+            )?.field,
+        )
+        assertEquals(
+            "max_age_hours",
+            ToolArgumentContract.validate(
+                "search_notification_history",
+                JSONObject().put("max_age_hours", 169),
+            )?.field,
+        )
+        assertEquals(
+            "days",
+            ToolArgumentContract.validate(
+                "get_health_summary",
+                JSONObject().put("days", 31),
+            )?.field,
+        )
+        assertEquals(
+            "limit",
+            ToolArgumentContract.validate(
+                "search_personal_orders",
+                JSONObject().put("limit", 31),
+            )?.field,
+        )
+        assertEquals(
+            "path",
+            ToolArgumentContract.validate("read_image", JSONObject())?.field,
+        )
+        assertEquals(
+            "limit",
+            ToolArgumentContract.validate(
+                "search_wechat_chat_images",
+                JSONObject().put("limit", 31),
+            )?.field,
+        )
+        assertEquals(
+            "limit",
+            ToolArgumentContract.validate(
+                "search_coloros_memories",
+                JSONObject().put("limit", 31),
+            )?.field,
+        )
+    }
+
+    @Test
     fun `missing coordinates cannot become a zero coordinate gesture`() {
         assertEquals("x", ToolArgumentContract.validate("tap", JSONObject())?.field)
         assertEquals(

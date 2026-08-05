@@ -88,6 +88,7 @@ internal class AgentLocalTools(
         logger = logger,
         root = rootCommandExecutor,
     )
+    private val imageTools = AgentImageTools(context, rootCommandExecutor)
     private val terminalController = RootShellTerminalController(
         logger = logger,
         linuxRootfsPath = AlpineEnvironmentPaths.rootfsDir(context).absolutePath,
@@ -176,6 +177,7 @@ internal class AgentLocalTools(
                 in DEVICE_TOOL_NAMES ->
                     structuredDeviceTools.execute(toolCall.name, args)
                         ?: textResult(errorResult("UNKNOWN_TOOL", "未知设备工具"))
+                "read_image" -> fileVisionTool { imageTools.readImage(args) }
                 "terminal" -> textResult(terminalTool { terminal(args) })
                 "run_command" -> textResult(terminalTool { runCommand(args) })
                 "read_file" -> textResult(terminalTool { readFile(args) })
@@ -237,6 +239,13 @@ internal class AgentLocalTools(
     private fun terminalTool(block: () -> String): String {
         if (!terminalToolsEnabled()) {
             return errorResult("TERMINAL_TOOLS_DISABLED", "请先启用终端/文件工具")
+        }
+        return block()
+    }
+
+    private fun fileVisionTool(block: () -> AgentModelClient.ToolResult): AgentModelClient.ToolResult {
+        if (!terminalToolsEnabled()) {
+            return textResult(errorResult("TERMINAL_TOOLS_DISABLED", "请先启用终端/文件工具"))
         }
         return block()
     }
@@ -1294,8 +1303,34 @@ internal class AgentLocalTools(
             "get_setting",
             "wifi_credentials",
             "recent_notifications",
+            "search_notification_history",
+            "recent_app_activity",
+            "app_usage_summary",
+            "get_current_location",
+            "get_device_environment",
+            "list_alarms",
+            "list_active_timers",
+            "search_clipboard_history",
+            "get_health_summary",
             "read_sms_code",
             "get_logcat",
+            "search_media",
+            "search_audio",
+            "search_recordings",
+            "search_files",
+            "search_calendar_events",
+            "search_contacts",
+            "search_call_history",
+            "search_messages",
+            "search_downloads",
+            "search_coloros_notes",
+            "search_coloros_recordings",
+            "search_recording_summaries",
+            "search_coloros_memories",
+            "search_saved_places",
+            "search_personal_orders",
+            "search_qq_chat_images",
+            "search_wechat_chat_images",
         )
         val DEVICE_SENSITIVE_ACTION_TOOL_NAMES = setOf(
             "set_setting",
