@@ -51,6 +51,16 @@ pending steering
 - 微信发送不提供专用工具、参数协议或额外策略层，完全使用通用 GUI 工具观察和操作微信界面。
 - 通知、短信验证码、Wi‑Fi 凭据和日志属于瞬时敏感工具数据。当前模型回合可以使用原始值，但持久 transcript 会同时替换对应工具参数和结果，避免进入会话数据库或后续 IPC。
 
+## Provider 协议
+
+OpenAI-compatible Provider 可在配置页选择 `Chat Completions` 或 `Responses API`。新安装和重置后的内置 OpenAI 默认使用 Responses；数据库中已有 Provider 不会被默认值覆盖。自定义 Provider 和其他内置 Provider 默认仍使用 Chat Completions。
+
+Responses 请求固定使用 `stream:true`、`store:false`，不发送 `previous_response_id`。Runtime 把本地历史转换为 typed input Items，并在同一次 run 的工具回合之间精确回放 Provider 返回的完整 output Items；因此 encrypted reasoning、服务端工具状态等 opaque 数据只存在于内存，不进入 IPC transcript、Room、日志或运行归档。持久会话只保留规范化回答、可见推理内容和 Eta 工具记录，后续 run 由这些稳定数据重新构建上下文。
+
+推理界面展示的是 Provider 返回的 reasoning summary；它不是原始思维链，也不会由 Eta 伪造。兼容 Provider 若按 Responses 协议返回 `reasoning_text`，Runtime 会把它作为可见推理内容展示。Responses 只对精确命中官方目录且未被远端显式标记为 `reasoning:false` 的模型补齐推理能力，不会因 Endpoint 类型而假定所有模型支持推理。
+
+服务端网页搜索是 Responses Provider 的独立开关，默认关闭。开启后请求只增加 `web_search` 托管工具；搜索开始和结束作为独立运行事件投影到 UI，不进入 Eta 本地工具执行器。最终回答中的 `url_citation` 会去重并转换为可点击 Markdown 引用；偏移无效时降级为回答末尾的来源列表。当前不接入 file search、code interpreter、MCP 或其他托管工具。
+
 ## 长期记忆
 
 长期记忆保存在 App 私有目录的单一 `MEMORY.md` 中。文件使用 UTF-8，安全上限为 1 MiB；仓库在进程内锁中应用变更，并通过 `AtomicFile` 覆盖完整文件。模型写入携带当前内容的 SHA-256 revision，revision 不一致时返回 `MEMORY_CONFLICT`，不会覆盖并发更新。
@@ -70,8 +80,6 @@ pending steering
 
 安装器只接受代码中固定版本、大小和 SHA-256 的 Alpine 官方 minirootfs，先在临时目录校验并解压，再原子替换 App 私有 rootfs。常用工具安装完成前不会写入完成标记；失败后可继续安装。安装环境不会改变终端/文件工具的用户设置。
 
-状态机语义研究参考了 MIT 许可的 [earendil-works/pi（研究时固定提交）](https://github.com/earendil-works/pi/tree/4c1861033b63a04563547ccdb5ed2bf31d4fdcd3)，Eta 按 Android Runtime、既有 IPC 和 Provider 协议做 Kotlin clean rewrite，没有直接引入其 TypeScript 运行时。
-
 ## 上下文与续接
 
 App 在发起请求前已经把当前用户消息写入会话 history，因此 Runtime 返回的 transcript 必须保持“增量”语义。已完成 run 的补充请求由 `AgentContinuationBuilder` 使用以下顺序重建上下文：
@@ -83,11 +91,11 @@ App 在发起请求前已经把当前用户消息写入会话 history，因此 R
 → 新补充消息
 ```
 
-图片只在需要它的当前模型回合中传递；持久 transcript 会删除 data URL，并写入稳定的省略说明，避免截图 base64 同时膨胀 Binder、Room 和后续上下文。启动请求在发送前按实际 `Parcel` 大小校验，超过 768 KiB 时会明确拒绝并提示减少图片数量或分辨率。持久 transcript 上限为 100 万字符，直接 IPC transcript 上限为 9.6 万字符；outbox 批量 drain 使用更紧的单项预算，确保最坏 8 条待交付结果仍处于 Binder 事务预算内。任何容量压缩都会在保留的 history 前插入明确的 Eta system notice，不会把删头后的 transcript 冒充成完整上下文。
+图片只在需要它的当前模型回合中传递；持久 transcript 会删除 data URL，并写入稳定的省略说明，避免截图 base64 同时膨胀 Binder、Room 和后续上下文。启动请求在发送前按实际 `Parcel` 大小校验，超过 768 KiB 时会明确拒绝并提示减少图片数量或分辨率。运行归档 transcript 上限为 100 万字符；会话上下文检查点和直接 IPC transcript 上限为 9.6 万字符；outbox 批量 drain 使用更紧的单项预算，确保最坏 8 条待交付结果仍处于 Binder 事务预算内。任何容量压缩都会在保留的 history 前插入明确的 Eta system notice，不会把删头后的 transcript 冒充成完整上下文。会话元数据、逐条展示消息和有界上下文检查点分别存储；会话列表查询不读取上下文正文，启动时也不会因单个长期会话阻塞全部会话恢复。
 
 浮层在已完成结果后发起的 continuation 会在 handoff 中只携带本次新增的 prompt supplement，不累计复制旧补充。App 回到前台时 drain outbox，把该用户消息和增量 transcript 一起写回 history。
 
-自动重试、上下文压缩和跨 Provider 的 opaque reasoning 状态尚未由当前 Loop 冒充实现；它们应位于 Loop 之外的 session 编排层，并各自拥有明确的持久化与测试合同。
+自动重试、上下文压缩和跨 run、跨 Provider 的 opaque reasoning 状态尚未由当前 Loop 冒充实现；Responses output Items 只在当前 run 内回放，不能作为持久会话状态。
 
 ## Skills 安装边界
 
@@ -101,7 +109,7 @@ Skill 安装工具始终向模型提供，不再根据顶层用户输入的固�
 
 已安装 Skill 的附属文本资源通过独立的有界读取工具访问，读取时再次做相对路径、canonical root、UTF-8 与大小检查；脚本和二进制 asset 不会借此被执行或当作无限文本送入上下文。
 
-待确认结果和外部入口归档会把 transcript 一并写入 Room。数据库 6 → 7 使用显式非破坏迁移为旧记录补 transcript，7 → 8 为会话增加已应用 run 标记。恢复幂等性不再靠比较 history 尾部猜测；保存任务严格按调用顺序串行，只有包含对应标记的快照落盘后才 ACK outbox。旧 6.x 结果仍可用已有 assistant 内容合成兼容 history。
+待确认结果和外部入口归档会把 transcript 一并写入 Room。数据库 6 → 7 使用显式非破坏迁移为旧记录补 transcript，7 → 8 为会话增加已应用 run 标记，10 → 11 将会话上下文迁入独立的有界检查点并清理旧的大字段。恢复幂等性不再靠比较 history 尾部猜测；保存任务严格按调用顺序串行，只有包含对应标记的快照落盘后才 ACK outbox。旧 6.x 结果仍可用已有 assistant 内容合成兼容 history。
 
 ## 验证
 

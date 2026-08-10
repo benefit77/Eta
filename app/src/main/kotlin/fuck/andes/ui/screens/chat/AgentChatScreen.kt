@@ -27,12 +27,22 @@ internal fun AgentChatScreen(
             reasoningEffort = state.reasoningEffort,
             availableReasoningEfforts = state.availableReasoningEfforts,
             pendingImages = state.pendingImages,
+            pendingFileReferences = state.pendingFileReferences,
+            messageEdit = state.messageEdit,
             onInputChange = { onAction(AgentChatAction.InputChanged(it)) },
             onReasoningEffortChange = { onAction(AgentChatAction.ReasoningEffortChanged(it)) },
             onSend = { onAction(AgentChatAction.SendMessage) },
             onStop = { onAction(AgentChatAction.StopRun) },
             onAttachImage = { uri -> onAction(AgentChatAction.ImageAttached(uri)) },
             onRemoveImage = { id -> onAction(AgentChatAction.RemoveImage(id)) },
+            onAttachFiles = { uris -> onAction(AgentChatAction.FilesAttached(uris)) },
+            onAttachFolder = { uri -> onAction(AgentChatAction.FolderAttached(uri)) },
+            onAttachFilePath = { path -> onAction(AgentChatAction.FilePathAttached(path)) },
+            onRemoveFileReference = { id -> onAction(AgentChatAction.RemoveFileReference(id)) },
+            onEditMessage = { id -> onAction(AgentChatAction.EditMessage(id)) },
+            onCancelMessageEdit = { onAction(AgentChatAction.CancelMessageEdit) },
+            onDeleteMessage = { id -> onAction(AgentChatAction.DeleteMessage(id)) },
+            onRegenerateMessage = { id -> onAction(AgentChatAction.RegenerateMessage(id)) },
             onSuggestionClick = { prompt ->
                 onAction(AgentChatAction.InputChanged(prompt))
                 onAction(AgentChatAction.SendMessage)

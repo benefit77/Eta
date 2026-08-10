@@ -20,6 +20,33 @@ internal data class ConversationEntity(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
 )
 
+internal data class ConversationMetadata(
+    val id: String,
+    val title: String,
+    @ColumnInfo(name = "thinking_enabled") val thinkingEnabled: Boolean,
+    @ColumnInfo(name = "reasoning_effort") val reasoningEffort: String,
+    @ColumnInfo(name = "applied_runtime_run_ids_json") val appliedRuntimeRunIdsJson: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+)
+
+@Entity(
+    tableName = "conversation_context_checkpoints",
+    foreignKeys = [
+        ForeignKey(
+            entity = ConversationEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["conversation_id"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+)
+internal data class ConversationContextCheckpointEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "conversation_id") val conversationId: String,
+    @ColumnInfo(name = "history_json") val historyJson: String,
+)
+
 @Entity(tableName = "conversation_state")
 internal data class ConversationStateEntity(
     @PrimaryKey val id: String = SINGLETON_ID,
@@ -52,6 +79,7 @@ internal data class ConversationMessageEntity(
     val type: String,
     val content: String,
     @ColumnInfo(name = "images_json") val imagesJson: String = "[]",
+    @ColumnInfo(name = "is_edited", defaultValue = "0") val isEdited: Boolean = false,
     @ColumnInfo(name = "render_markdown") val renderMarkdown: Boolean? = null,
     @ColumnInfo(name = "context_tokens") val contextTokens: Int? = null,
     @ColumnInfo(name = "input_tokens") val inputTokens: Int? = null,

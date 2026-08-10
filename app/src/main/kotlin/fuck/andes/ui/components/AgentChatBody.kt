@@ -69,6 +69,8 @@ import fuck.andes.agent.browser.AgentBrowserSession
 import fuck.andes.data.model.ReasoningEffort
 import fuck.andes.ui.model.AgentChatMessageUi
 import fuck.andes.ui.model.AgentMessageUi
+import fuck.andes.ui.model.MessageEditUiState
+import fuck.andes.ui.model.PendingFileReferenceUi
 import fuck.andes.ui.model.PendingImageUi
 import fuck.andes.ui.model.RunTraceMessageUi
 import fuck.andes.ui.model.SuggestionChipsMessageUi
@@ -76,6 +78,7 @@ import fuck.andes.ui.model.ThinkingMessageUi
 import fuck.andes.ui.model.ToolActivityMessageUi
 import fuck.andes.ui.model.ToolSummaryMessageUi
 import fuck.andes.ui.model.UserMessageUi
+import fuck.andes.ui.app.AgentConversationRevisionReducer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
@@ -112,12 +115,22 @@ fun AgentChatBody(
     reasoningEffort: ReasoningEffort,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
+    pendingFileReferences: List<PendingFileReferenceUi>,
+    messageEdit: MessageEditUiState?,
     onInputChange: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onAttachImage: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
+    onRemoveFileReference: (String) -> Unit,
+    onEditMessage: (String) -> Unit,
+    onCancelMessageEdit: () -> Unit,
+    onDeleteMessage: (String) -> Unit,
+    onRegenerateMessage: (String) -> Unit,
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
     onOpenBrowser: () -> Unit,
@@ -131,8 +144,11 @@ fun AgentChatBody(
     val isKeyboardVisible = imeBottomPx > 0
     val browserSnapshot by AgentBrowserSession.snapshots.collectAsState()
 
-    val visibleMessages = remember(messages) {
-        messages.filterNot { message ->
+    val visibleMessages = remember(messages, messageEdit?.targetMessageId) {
+        AgentConversationRevisionReducer.visibleMessagesForEdit(
+            messages = messages,
+            targetMessageId = messageEdit?.targetMessageId,
+        ).filterNot { message ->
             message is AgentMessageUi && message.content.isBlank()
         }
     }
@@ -180,6 +196,8 @@ fun AgentChatBody(
         reasoningEffort = reasoningEffort,
         availableReasoningEfforts = availableReasoningEfforts,
         pendingImages = pendingImages,
+        pendingFileReferences = pendingFileReferences,
+        messageEdit = messageEdit,
         showEmptySuggestions = !isKeyboardVisible,
         keepBottomAnchored = keepBottomAnchored,
         onBottomAnchorChanged = { keepBottomAnchored = it },
@@ -195,6 +213,14 @@ fun AgentChatBody(
         onStop = onStop,
         onAttachImage = onAttachImage,
         onRemoveImage = onRemoveImage,
+        onAttachFiles = onAttachFiles,
+        onAttachFolder = onAttachFolder,
+        onAttachFilePath = onAttachFilePath,
+        onRemoveFileReference = onRemoveFileReference,
+        onEditMessage = onEditMessage,
+        onCancelMessageEdit = onCancelMessageEdit,
+        onDeleteMessage = onDeleteMessage,
+        onRegenerateMessage = onRegenerateMessage,
         onSuggestionClick = onSuggestionClick,
         onRunTraceClick = onRunTraceClick,
         onOpenBrowser = onOpenBrowser,
@@ -214,6 +240,8 @@ private fun AgentChatScaffold(
     reasoningEffort: ReasoningEffort,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
+    pendingFileReferences: List<PendingFileReferenceUi>,
+    messageEdit: MessageEditUiState?,
     showEmptySuggestions: Boolean,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
@@ -223,6 +251,14 @@ private fun AgentChatScaffold(
     onStop: () -> Unit,
     onAttachImage: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
+    onRemoveFileReference: (String) -> Unit,
+    onEditMessage: (String) -> Unit,
+    onCancelMessageEdit: () -> Unit,
+    onDeleteMessage: (String) -> Unit,
+    onRegenerateMessage: (String) -> Unit,
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
     onOpenBrowser: () -> Unit,
@@ -254,12 +290,19 @@ private fun AgentChatScaffold(
                 reasoningEffort = reasoningEffort,
                 availableReasoningEfforts = availableReasoningEfforts,
                 pendingImages = pendingImages,
+                pendingFileReferences = pendingFileReferences,
+                messageEdit = messageEdit,
                 onInputChange = onInputChange,
                 onReasoningEffortChange = onReasoningEffortChange,
                 onSend = onSend,
                 onStop = onStop,
                 onAttachImage = onAttachImage,
                 onRemoveImage = onRemoveImage,
+                onAttachFiles = onAttachFiles,
+                onAttachFolder = onAttachFolder,
+                onAttachFilePath = onAttachFilePath,
+                onRemoveFileReference = onRemoveFileReference,
+                onCancelMessageEdit = onCancelMessageEdit,
             )
         },
     ) { innerPadding ->
@@ -283,6 +326,11 @@ private fun AgentChatScaffold(
                 onSuggestionClick = onSuggestionClick,
                 onRunTraceClick = onRunTraceClick,
                 onOpenBrowser = onOpenBrowser,
+                onEditMessage = onEditMessage,
+                onDeleteMessage = onDeleteMessage,
+                onRegenerateMessage = onRegenerateMessage,
+                messageActionsEnabled = !isStreaming && messageEdit == null,
+                editTargetMessageId = messageEdit?.targetMessageId,
                 currentBrowserMessageId = currentBrowserMessageId,
                 modifier = Modifier
                     .fillMaxSize()
@@ -304,6 +352,11 @@ private fun AgentChatMessages(
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
     onOpenBrowser: () -> Unit,
+    onEditMessage: (String) -> Unit,
+    onDeleteMessage: (String) -> Unit,
+    onRegenerateMessage: (String) -> Unit,
+    messageActionsEnabled: Boolean,
+    editTargetMessageId: String?,
     currentBrowserMessageId: String?,
     modifier: Modifier = Modifier,
 ) {
@@ -379,8 +432,8 @@ private fun AgentChatMessages(
                 enabled = shouldFollowBottom,
                 bottomItemIndex = currentBottomItemIndex,
                 sentinelBottom = sentinel?.let { it.offset + it.size },
-                // Operit 同样把输入器高度放进滚动内容的 bottom inset，而不是缩短
-                // 滚动容器。跟底目标应是 afterContentPadding 之前的正文边界。
+                // 输入器高度属于滚动内容的 bottom inset，而不是滚动容器高度。
+                // 跟底目标应是 afterContentPadding 之前的正文边界。
                 viewportEnd = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding,
                 lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index,
             )
@@ -471,7 +524,7 @@ private fun AgentChatMessages(
         }
     }
 
-    // 与 Operit 一致：滚动层保持整屏，输入器作为后绘制浮层；输入器高度进入列表
+    // 滚动层保持整屏，输入器作为后绘制浮层；输入器高度进入列表的
     // afterContentPadding，确保跟到底部时最后一行停在输入器上方。
     Box(modifier = modifier.clipToBounds()) {
         LazyColumn(
@@ -492,7 +545,9 @@ private fun AgentChatMessages(
                 val itemModifier = Modifier.animateItem(
                     fadeInSpec = tween(durationMillis = 180),
                     placementSpec = null,
-                    fadeOutSpec = tween(durationMillis = 120),
+                    // 历史轮次被编辑、删除或重新生成时必须立即退出；退出动画会让已从
+                    // 状态中裁掉的旧消息继续绘制，并与同位置的新流式消息短暂重叠。
+                    fadeOutSpec = null,
                 )
                 when (entry) {
                     is AgentTimelineEntry.Message -> {
@@ -514,16 +569,30 @@ private fun AgentChatMessages(
                                 message.id == currentBrowserMessageId,
                             showCopyAction = message !is AgentMessageUi ||
                                 message.id in finalResultMessageIds,
+                            showMessageActions = message.id in finalResultMessageIds,
+                            messageActionsEnabled = messageActionsEnabled,
+                            isEditing = message.id == editTargetMessageId,
+                            onEditMessage = onEditMessage,
+                            onDeleteMessage = onDeleteMessage,
+                            onRegenerateMessage = onRegenerateMessage,
                             modifier = itemModifier,
                         )
                     }
 
                     is AgentTimelineEntry.WorkProcess -> {
+                        entry.messages.forEach { message ->
+                            if (message is ThinkingMessageUi && message.isStreaming) {
+                                streamingMarkdownStates.getOrPut(message.id) {
+                                    StreamingMarkdownState()
+                                }
+                            }
+                        }
                         AgentWorkProcess(
                             id = entry.key,
                             messages = entry.messages,
                             onOpenBrowser = onOpenBrowser,
                             currentBrowserMessageId = currentBrowserMessageId,
+                            retainedStreamingStates = streamingMarkdownStates,
                             modifier = itemModifier,
                         )
                     }
@@ -691,12 +760,19 @@ private fun AgentChatBottomBar(
     reasoningEffort: ReasoningEffort,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
+    pendingFileReferences: List<PendingFileReferenceUi>,
+    messageEdit: MessageEditUiState?,
     onInputChange: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onAttachImage: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
+    onRemoveFileReference: (String) -> Unit,
+    onCancelMessageEdit: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -762,12 +838,20 @@ private fun AgentChatBottomBar(
                 reasoningEffort = reasoningEffort,
                 availableReasoningEfforts = availableReasoningEfforts,
                 pendingImages = pendingImages,
+                pendingFileReferences = pendingFileReferences,
+                isEditingMessage = messageEdit != null,
+                editHasLaterTurns = messageEdit?.hasLaterTurns == true,
                 onInputChange = onInputChange,
                 onReasoningEffortChange = onReasoningEffortChange,
                 onSend = onSend,
                 onStop = onStop,
                 onAttachImage = onAttachImage,
                 onRemoveImage = onRemoveImage,
+                onAttachFiles = onAttachFiles,
+                onAttachFolder = onAttachFolder,
+                onAttachFilePath = onAttachFilePath,
+                onRemoveFileReference = onRemoveFileReference,
+                onCancelMessageEdit = onCancelMessageEdit,
                 modifier = Modifier.fillMaxWidth(),
             )
         }

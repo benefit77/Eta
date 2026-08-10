@@ -1,6 +1,7 @@
 package fuck.andes.ui.model
 
 import androidx.compose.runtime.Immutable
+import fuck.andes.agent.model.AgentFileReference
 import fuck.andes.agent.model.AgentModelClient
 import fuck.andes.data.model.ReasoningEffort
 
@@ -14,7 +15,9 @@ internal data class AgentChatUiState(
     val reasoningEffort: ReasoningEffort = ReasoningEffort.fromLegacy(thinkingEnabled),
     val availableReasoningEfforts: List<ReasoningEffort> = emptyList(),
     val pendingImages: List<PendingImageUi> = emptyList(),
+    val pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
     val appliedRuntimeRunIds: List<String> = emptyList(),
+    val messageEdit: MessageEditUiState? = null,
 )
 
 @Immutable
@@ -27,6 +30,7 @@ data class UserMessageUi(
     override val id: String,
     val content: String,
     val images: List<String> = emptyList(),
+    val isEdited: Boolean = false,
 ) : AgentChatMessageUi
 
 @Immutable
@@ -118,4 +122,19 @@ data class PendingImageUi(
     val uri: String,
     val dataUrl: String,
     val mimeType: String,
+)
+
+@Immutable
+data class PendingFileReferenceUi(
+    val id: String,
+    val reference: AgentFileReference,
+)
+
+@Immutable
+data class MessageEditUiState(
+    val targetMessageId: String,
+    val previousInput: String,
+    val previousImages: List<PendingImageUi>,
+    val previousFileReferences: List<PendingFileReferenceUi>,
+    val hasLaterTurns: Boolean,
 )

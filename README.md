@@ -92,6 +92,8 @@ Eta 不对浏览器请求执行额外的 URL、DNS、IP、主机数量、请求�
 
 在用户授权下执行 `user` 或 `root` shell 命令，读写文件、列目录、跑脚本、查日志、改配置。会话式 shell 保持 cwd 和环境变量，异步任务后台执行并分段读取输出。终端/文件工具当前默认开启，用户可在设置中关闭。
 
+聊天输入栏可以引用内部存储与 `/data/local/tmp` 下的文件或文件夹，发送后以附件名称和原始请求分开展示。Eta 只把经过 Root 校验的规范绝对路径写入模型上下文，不上传、不复制或缓存原文件；模型再按任务调用文件或终端工具读取。系统文件选择器会解析内部存储文档，以及能转换为本地媒体库路径的“最近”文件；云盘和其他只有 `content://` URI 的来源不会降级为上传。
+
 终端按用途分为两个环境：
 
 - `android` 是原生 Android Shell，负责系统、应用、日志、Magisk 和设备文件操作。Root 会话会自动发现 Magisk、KernelSU 或 APatch 提供的 BusyBox，并以 standalone `ash` 补齐不在系统 PATH 中的 applet。
@@ -118,6 +120,7 @@ Eta 使用 App 私有目录中的单一 `MEMORY.md` 保存跨对话长期记忆�
 ### 会话与结果
 
 - **结果归档**：外部入口触发的运行结果会归档到 App 会话，即使 App 进程被杀也会尝试恢复
+- **修改历史**：长按用户消息可复制、编辑或从该轮开始删除；每轮最终回复可重新生成。编辑、删除或重新生成历史轮次时，Eta 会同步截断该轮及之后的模型上下文，旧分支不会保留
 
 ## 使用场景
 
@@ -137,7 +140,7 @@ Eta 使用 App 私有目录中的单一 `MEMORY.md` 保存跨对话长期记忆�
 
 Agent 的能力取决于你用什么模型。
 
-- **OpenAI-compatible** 与 **Anthropic** 双协议，支持 SSE 流式传输、流式工具调用、图片输入、推理内容
+- **模型协议**：支持 OpenAI-compatible Chat Completions、Responses API 与 Anthropic Messages，覆盖 SSE 流式传输、工具调用、图片输入和推理内容；Responses 可展示推理摘要，并可按 Provider 开启服务端网页搜索
 - **内置提供商**：OpenAI、Anthropic、阿里百炼、DeepSeek、Kimi、MiMo、MiniMax、StepFun、硅基流动、OpenRouter
 - **厂商品牌图标**：已知提供商在列表中显示本地品牌原色图标，未知或自定义接口保留通用图标；素材来源与许可见 [第三方声明](docs/THIRD_PARTY_NOTICES.md)
 - **自定义提供商**：自定义 HTTP/HTTPS Base URL、API Key、请求头、body JSON；HTTP 会明文传输 API Key、提示词与模型内容
@@ -174,7 +177,7 @@ Gemini 解锁与一圈即搜是 Eta 早期建立的 Google 能力解锁功能，
 3. 按需授予悬浮窗、无障碍、应用列表读取、位置、通知使用权、使用情况访问和后台运行等权限；位置仅在 Agent 调用位置工具时读取，如需从小布等后台入口执行位置任务，应授予“始终允许”
 4. 按需开启设备直达、敏感信息读取、敏感设备操作和终端/文件工具；终端身份由用户明确选择为 `user` 或 `root`，需要 Python、Git 等通用命令时可另行安装 Linux 工具环境
 5. 在系统设置中开启 Eta 无障碍服务；如需自动恢复，可在 Eta 设置页显式开启“强制保持无障碍”
-6. 如需系统助手接入或 Google 能力解锁，再在支持 libxposed API 102 的 LSPosed 环境中启用模块，确认作用域包含 `system`、`SystemUI`、Google App、小布识屏、小布助手和超级小爱，然后重启手机
+6. 如需系统助手接入、ColorOS 系统记忆或 Google 能力解锁，再在支持 libxposed API 102 的 LSPosed 环境中启用模块，确认作用域包含 `system`、`SystemUI`、Google App、小布识屏、小布助手、小布记忆和超级小爱，然后重启手机
 
 </details>
 
@@ -277,6 +280,7 @@ hook/system/               system_server Hook
 hook/google/               Google App 进程 Hook
 hook/colordirect/          ColorDirectService Hook
 hook/breeno/               小布入口接管
+hook/aimemory/              小布记忆进程内只读查询桥
 hook/xiaoai/               超级小爱入口接管
 
 agent/runtime/             Agent Runtime、跨进程协议、结果归档

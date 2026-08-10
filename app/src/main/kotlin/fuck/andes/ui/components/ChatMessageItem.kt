@@ -53,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -80,6 +81,7 @@ import androidx.compose.ui.text.style.TextMotion
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.composables.icons.lucide.R as LucideR
 import com.mikepenz.markdown.annotator.annotatorSettings
 import com.mikepenz.markdown.annotator.buildMarkdownAnnotatedString
@@ -106,6 +108,7 @@ import com.mikepenz.markdown.model.MarkdownState
 import com.mikepenz.markdown.model.rememberMarkdownState
 import com.mikepenz.markdown.model.State
 import com.mikepenz.markdown.utils.getUnescapedTextInNode
+import fuck.andes.agent.model.AgentFileReferencePromptCodec
 import fuck.andes.ui.model.AgentChatMessageUi
 import fuck.andes.ui.model.AgentMessageUi
 import fuck.andes.ui.model.RunTraceMessageUi
@@ -131,12 +134,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.RichTooltip
+import top.yukonga.miuix.kmp.basic.TooltipAnchorPosition
+import top.yukonga.miuix.kmp.basic.TooltipBox
+import top.yukonga.miuix.kmp.basic.TooltipDefaults
+import top.yukonga.miuix.kmp.basic.rememberTooltipState
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -218,17 +227,35 @@ internal fun ChatMessageItem(
     compact: Boolean = false,
     retainedStreamingState: StreamingMarkdownState? = null,
     showCopyAction: Boolean = true,
+    showMessageActions: Boolean = false,
+    messageActionsEnabled: Boolean = true,
+    isEditing: Boolean = false,
+    onEditMessage: (String) -> Unit = {},
+    onDeleteMessage: (String) -> Unit = {},
+    onRegenerateMessage: (String) -> Unit = {},
 ) {
     when (message) {
-        is UserMessageUi -> UserMessageBubble(message = message, modifier = modifier)
+        is UserMessageUi -> UserMessageBubble(
+            message = message,
+            actionsEnabled = messageActionsEnabled,
+            isEditing = isEditing,
+            onEdit = { onEditMessage(message.id) },
+            onDelete = { onDeleteMessage(message.id) },
+            modifier = modifier,
+        )
         is AgentMessageUi -> AgentMessageBlock(
             message = message,
             retainedStreamingState = retainedStreamingState,
             showCopyAction = showCopyAction,
+            showMessageActions = showMessageActions,
+            messageActionsEnabled = messageActionsEnabled,
+            onDelete = { onDeleteMessage(message.id) },
+            onRegenerate = { onRegenerateMessage(message.id) },
             modifier = modifier,
         )
         is ThinkingMessageUi -> ThinkingRow(
             message = message,
+            retainedStreamingState = retainedStreamingState,
             modifier = modifier,
             compact = compact,
         )
@@ -254,6 +281,7 @@ internal fun AgentWorkProcess(
     messages: List<AgentChatMessageUi>,
     onOpenBrowser: () -> Unit,
     currentBrowserMessageId: String?,
+    retainedStreamingStates: Map<String, StreamingMarkdownState>,
     modifier: Modifier = Modifier,
 ) {
     val running = messages.any { message ->
@@ -364,6 +392,7 @@ internal fun AgentWorkProcess(
                             onRunTraceClick = {},
                             onOpenBrowser = onOpenBrowser,
                             showBrowserShortcut = message.id == currentBrowserMessageId,
+                            retainedStreamingState = retainedStreamingStates[message.id],
                             compact = true,
                         )
                     }
@@ -378,56 +407,164 @@ internal fun AgentWorkProcess(
 @Composable
 private fun UserMessageBubble(
     message: UserMessageUi,
+    actionsEnabled: Boolean,
+    isEditing: Boolean,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    @Suppress("DEPRECATION")
+    val clipboardManager = LocalClipboardManager.current
+    val tooltipState = rememberTooltipState(isPersistent = true)
+    LaunchedEffect(actionsEnabled) {
+        if (!actionsEnabled) tooltipState.dismiss()
+    }
+    val visiblePrompt = remember(message.content) {
+        AgentFileReferencePromptCodec.parse(message.content)
+    }
+
     Row(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 7.dp),
         horizontalArrangement = Arrangement.End,
     ) {
-        Column(
-            modifier = Modifier
-                .widthIn(max = 320.dp)
-                .squircleSurface(
-                    color = MiuixTheme.colorScheme.surfaceContainerHigh,
-                    topStart = 20.dp,
-                    topEnd = 20.dp,
-                    bottomEnd = 6.dp,
-                    bottomStart = 20.dp,
-                )
-                .padding(horizontal = 16.dp, vertical = 11.dp),
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
+                positioning = TooltipAnchorPosition.Below,
+            ),
+            tooltip = {
+                RichTooltip(insideMargin = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        MessageTooltipAction(
+                            icon = LucideR.drawable.lucide_ic_copy,
+                            label = "复制",
+                            onClick = {
+                                @Suppress("DEPRECATION")
+                                clipboardManager.setText(AnnotatedString(message.content))
+                                tooltipState.dismiss()
+                            },
+                        )
+                        MessageTooltipAction(
+                            icon = LucideR.drawable.lucide_ic_pencil,
+                            label = "编辑",
+                            onClick = {
+                                tooltipState.dismiss()
+                                onEdit()
+                            },
+                        )
+                        MessageTooltipAction(
+                            icon = LucideR.drawable.lucide_ic_trash_2,
+                            label = "删除",
+                            onClick = {
+                                tooltipState.dismiss()
+                                onDelete()
+                            },
+                        )
+                    }
+                }
+            },
+            state = tooltipState,
+            focusable = true,
+            enableUserInput = actionsEnabled,
         ) {
-            if (message.images.isNotEmpty()) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(bottom = 8.dp)
-                ) {
-                    message.images.forEach { dataUrl ->
-                        val bitmap = rememberDataUrlBitmap(dataUrl)
-                        if (bitmap != null) {
-                            Image(
-                                bitmap = bitmap,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .size(100.dp)
-                                    .clip(RoundedCornerShape(12.dp)),
-                                contentScale = ContentScale.Crop,
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 320.dp)
+                    .squircleSurface(
+                        color = MiuixTheme.colorScheme.surfaceContainerHigh,
+                        topStart = 20.dp,
+                        topEnd = 20.dp,
+                        bottomEnd = 6.dp,
+                        bottomStart = 20.dp,
+                    )
+                    .then(
+                        if (isEditing) {
+                            Modifier.squircleBorder(
+                                width = 1.dp,
+                                color = MiuixTheme.colorScheme.primary,
+                                cornerRadius = 20.dp,
                             )
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .padding(horizontal = 16.dp, vertical = 11.dp),
+            ) {
+                if (message.images.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    ) {
+                        message.images.forEach { dataUrl ->
+                            val bitmap = rememberDataUrlBitmap(dataUrl)
+                            if (bitmap != null) {
+                                Image(
+                                    bitmap = bitmap,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(100.dp)
+                                        .clip(RoundedCornerShape(12.dp)),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            }
                         }
                     }
                 }
-            }
-            if (message.content.isNotBlank()) {
-                SelectionContainer {
+                if (visiblePrompt.references.isNotEmpty()) {
+                    SentFileReferenceFlow(
+                        references = visiblePrompt.references,
+                        modifier = Modifier.padding(
+                            bottom = if (visiblePrompt.request.isNotBlank()) 8.dp else 0.dp
+                        ),
+                    )
+                }
+                if (visiblePrompt.request.isNotBlank()) {
+                    SelectionContainer {
+                        Text(
+                            text = visiblePrompt.request,
+                            style = MiuixTheme.textStyles.body1,
+                            color = MiuixTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+                if (message.isEdited) {
                     Text(
-                        text = message.content,
-                        style = MiuixTheme.textStyles.body1,
-                        color = MiuixTheme.colorScheme.onSurface,
+                        text = "已编辑",
+                        style = MiuixTheme.textStyles.body2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MessageTooltipAction(
+    icon: Int,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(
+            painter = painterResource(icon),
+            contentDescription = label,
+            modifier = Modifier.size(16.dp),
+            tint = MiuixTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onSurface,
+        )
     }
 }
 
@@ -438,6 +575,10 @@ private fun AgentMessageBlock(
     message: AgentMessageUi,
     retainedStreamingState: StreamingMarkdownState?,
     showCopyAction: Boolean,
+    showMessageActions: Boolean,
+    messageActionsEnabled: Boolean,
+    onDelete: () -> Unit,
+    onRegenerate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     @Suppress("DEPRECATION")
@@ -535,6 +676,38 @@ private fun AgentMessageBlock(
                         },
                     )
                 }
+                if (showMessageActions) {
+                    TooltipBox(text = "重新生成", enabled = messageActionsEnabled) {
+                        IconButton(
+                            onClick = onRegenerate,
+                            enabled = messageActionsEnabled,
+                            minWidth = 30.dp,
+                            minHeight = 30.dp,
+                        ) {
+                            Icon(
+                                painter = painterResource(LucideR.drawable.lucide_ic_refresh_cw),
+                                contentDescription = "重新生成回复",
+                                modifier = Modifier.size(15.dp),
+                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
+                            )
+                        }
+                    }
+                    TooltipBox(text = "删除", enabled = messageActionsEnabled) {
+                        IconButton(
+                            onClick = onDelete,
+                            enabled = messageActionsEnabled,
+                            minWidth = 30.dp,
+                            minHeight = 30.dp,
+                        ) {
+                            Icon(
+                                painter = painterResource(LucideR.drawable.lucide_ic_trash_2),
+                                contentDescription = "删除这轮对话",
+                                modifier = Modifier.size(15.dp),
+                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -615,6 +788,27 @@ private fun StreamingMarkdown(
     val acceptedContent = state.acceptedContent
     val currentRevealCompleteCallback by rememberUpdatedState(onRevealCompleteChange)
     val snapshot = state.snapshot
+    val lifecycleScope = rememberCoroutineScope()
+
+    LifecycleResumeEffect(state) {
+        val catchUpJob = if (revealCoordinator.isAnimationPaused) {
+            // ON_START 后恢复的首批重组和排版仍可能携带后台积压内容。保留两个绘制帧的
+            // 追平窗口，等这些块全部登记后再恢复动画，之后的新增量仍按正常速度显现。
+            lifecycleScope.launch {
+                revealCoordinator.pauseAnimationsAndCatchUp()
+                withFrameNanos { }
+                revealCoordinator.pauseAnimationsAndCatchUp()
+                withFrameNanos { }
+                revealCoordinator.resumeAnimationsAfterCatchUp()
+            }
+        } else {
+            null
+        }
+        onPauseOrDispose {
+            catchUpJob?.cancel()
+            revealCoordinator.pauseAnimationsAndCatchUp()
+        }
+    }
 
     LaunchedEffect(revealCoordinator) {
         revealCoordinator.runFrameClock()
@@ -1583,14 +1777,15 @@ private fun MutableSet<RevealBlockKey>.collectTableCellRevealKeys(node: ASTNode)
 @Composable
 private fun ThinkingRow(
     message: ThinkingMessageUi,
+    retainedStreamingState: StreamingMarkdownState?,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
     var expanded by remember(message.id) { mutableStateOf(!message.collapsed) }
-    // 只给本次实际经历流式输出的思考保留显现时钟；历史消息直接静态渲染。
-    val keepStreamingMarkdown = remember(message.id) { message.isStreaming }
-    val streamingState = if (keepStreamingMarkdown) {
-        remember(message.id) { StreamingMarkdownState() }
+    // 思考结束后立即切换为与完成态回答相同的稳定 Markdown。工具执行期间 App 可能
+    // 处于后台，不能让旧思考保留显现债务，回来后在新回答旁边补播整段内容。
+    val streamingState = if (message.isStreaming) {
+        retainedStreamingState ?: remember(message.id) { StreamingMarkdownState() }
     } else {
         null
     }
@@ -1602,7 +1797,7 @@ private fun ThinkingRow(
     // 后台解析，而不是等到首次点击展开。否则首帧只能测量 loading fallback 的纯文本高度，
     // 解析完成后正文高度会再次变化；状态挂在行级还能在收起/展开循环中存活，
     // 避免每次展开都重新走一遍异步解析。
-    val stableMarkdownState = if (!keepStreamingMarkdown) {
+    val stableMarkdownState = if (!message.isStreaming) {
         rememberMarkdownState(
             content = message.content,
             retainState = true,

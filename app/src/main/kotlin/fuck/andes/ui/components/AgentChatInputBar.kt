@@ -1,9 +1,5 @@
 package fuck.andes.ui.components
 
-import android.content.Intent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -22,7 +18,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -49,26 +44,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntRect
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.composables.icons.lucide.R as LucideR
 import fuck.andes.data.model.ReasoningEffort
+import fuck.andes.ui.model.PendingFileReferenceUi
 import fuck.andes.ui.model.PendingImageUi
 import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.Icon
@@ -88,7 +82,6 @@ private val InputIconSize = 20.dp
 private val SendButtonVisualSize = 32.dp
 private val ThinkingChipShape = RoundedCornerShape(percent = 50)
 private val InputContainerShape = RoundedCornerShape(20.dp)
-private val ThinkingPopupMargin = 8.dp
 
 /**
  * Agent 输入器始终保持同一空间结构，聚焦、输入和执行过程只改变状态，不搬动操作入口。
@@ -100,41 +93,56 @@ fun AgentChatInputBar(
     reasoningEffort: ReasoningEffort,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
+    pendingFileReferences: List<PendingFileReferenceUi>,
+    isEditingMessage: Boolean,
+    editHasLaterTurns: Boolean,
     onInputChange: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onAttachImage: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
+    onRemoveFileReference: (String) -> Unit,
+    onCancelMessageEdit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val photoPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia(),
-    ) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-            onAttachImage(uri.toString())
-        }
-    }
-    val canSend = input.isNotBlank() || pendingImages.isNotEmpty()
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusRequester = remember { FocusRequester() }
+    val canSend = input.isNotBlank() || pendingImages.isNotEmpty() || pendingFileReferences.isNotEmpty()
     val density = LocalDensity.current
     val statusBarTopPx = WindowInsets.statusBars.getTop(density)
     var inputContainerTopPx by remember { mutableIntStateOf(0) }
     val thinkingPopupMaxHeight = with(density) {
         (inputContainerTopPx - statusBarTopPx).coerceAtLeast(0).toDp()
-    }.minus(ThinkingPopupMargin * 2)
+    }.minus(ChatInputPopupMargin * 2)
         .coerceAtLeast(ListPopupDefaults.MinPopupHeight)
+
+    LaunchedEffect(isEditingMessage) {
+        if (isEditingMessage) {
+            focusRequester.requestFocus()
+            keyboard?.show()
+        }
+    }
 
     Column(
         modifier = modifier
             .fillMaxWidth(),
     ) {
+        AnimatedVisibility(
+            visible = pendingFileReferences.isNotEmpty(),
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(100)) + shrinkVertically(tween(160)),
+        ) {
+            PendingFileReferenceStrip(
+                references = pendingFileReferences,
+                onRemoveReference = onRemoveFileReference,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+
         AnimatedVisibility(
             visible = pendingImages.isNotEmpty(),
             enter = fadeIn(tween(160)),
@@ -144,6 +152,23 @@ fun AgentChatInputBar(
                 images = pendingImages,
                 onRemoveImage = onRemoveImage,
                 modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = isEditingMessage,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(100)) + shrinkVertically(tween(140)),
+        ) {
+            Text(
+                text = if (editHasLaterTurns) {
+                    "发送后将替换此消息及之后内容"
+                } else {
+                    "发送后将替换此消息"
+                },
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(start = 8.dp, bottom = 6.dp),
             )
         }
 
@@ -193,7 +218,9 @@ fun AgentChatInputBar(
                     BasicTextField(
                         value = input,
                         onValueChange = onInputChange,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                         textStyle = TextStyle(
                             color = MiuixTheme.colorScheme.onSurface,
@@ -210,36 +237,41 @@ fun AgentChatInputBar(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(
-                        onClick = {
-                            photoPicker.launch(
-                                PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly
-                                )
+                    if (isEditingMessage) {
+                        IconButton(
+                            onClick = onCancelMessageEdit,
+                            minWidth = 38.dp,
+                            minHeight = 38.dp,
+                        ) {
+                            Icon(
+                                painter = painterResource(LucideR.drawable.lucide_ic_x),
+                                contentDescription = "取消编辑",
+                                modifier = Modifier.size(InputIconSize),
+                                tint = MiuixTheme.colorScheme.onSurface,
                             )
-                        },
-                        minWidth = 38.dp,
-                        minHeight = 38.dp,
-                    ) {
-                        Icon(
-                            painter = painterResource(LucideR.drawable.lucide_ic_plus),
-                            contentDescription = "添加图片",
-                            modifier = Modifier.size(InputIconSize + 2.dp),
-                            tint = MiuixTheme.colorScheme.onSurface,
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(2.dp))
-
-                    if (availableReasoningEfforts.isNotEmpty()) {
-                        ThinkingEffortChip(
-                            effort = reasoningEffort,
-                            options = availableReasoningEfforts,
-                            enabled = !isStreaming,
+                        }
+                    } else {
+                        AgentAttachmentPickerButton(
                             popupAnchorTopPx = inputContainerTopPx,
                             popupMaxHeight = thinkingPopupMaxHeight,
-                            onEffortChange = onReasoningEffortChange,
+                            onAttachImage = onAttachImage,
+                            onAttachFiles = onAttachFiles,
+                            onAttachFolder = onAttachFolder,
+                            onAttachFilePath = onAttachFilePath,
                         )
+
+                        Spacer(modifier = Modifier.width(2.dp))
+
+                        if (availableReasoningEfforts.isNotEmpty()) {
+                            ThinkingEffortChip(
+                                effort = reasoningEffort,
+                                options = availableReasoningEfforts,
+                                enabled = !isStreaming,
+                                popupAnchorTopPx = inputContainerTopPx,
+                                popupMaxHeight = thinkingPopupMaxHeight,
+                                onEffortChange = onReasoningEffortChange,
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.weight(1f))
@@ -303,6 +335,7 @@ fun AgentChatInputBar(
             }
         }
     }
+
 }
 
 /**
@@ -325,7 +358,7 @@ private fun ThinkingEffortChip(
         if (!menuEnabled) showPopup = false
     }
     val popupPositionProvider = remember(popupAnchorTopPx) {
-        ThinkingPopupPositionProvider(popupAnchorTopPx)
+        InputPopupPositionProvider(popupAnchorTopPx)
     }
     val contentColor by animateColorAsState(
         targetValue = if (active) {
@@ -407,45 +440,6 @@ private fun ThinkingEffortChip(
 /**
  * 横向跟随 Chip，竖向则避开整个输入面板；默认下拉定位只会避开 Chip 自身。
  */
-private class ThinkingPopupPositionProvider(
-    private val inputContainerTopPx: Int,
-) : PopupPositionProvider {
-    override fun calculatePosition(
-        anchorBounds: IntRect,
-        windowBounds: IntRect,
-        layoutDirection: LayoutDirection,
-        popupContentSize: IntSize,
-        popupMargin: IntRect,
-        alignment: PopupPositionProvider.Align,
-    ): IntOffset {
-        val alignToEnd = when (alignment) {
-            PopupPositionProvider.Align.End,
-            PopupPositionProvider.Align.TopEnd,
-            PopupPositionProvider.Align.BottomEnd,
-            -> true
-
-            else -> false
-        }
-        val physicalEnd = if (layoutDirection == LayoutDirection.Ltr) alignToEnd else !alignToEnd
-        val requestedX = if (physicalEnd) {
-            anchorBounds.right - popupContentSize.width - popupMargin.right
-        } else {
-            anchorBounds.left + popupMargin.left
-        }
-        val maxX = (windowBounds.right - popupContentSize.width - popupMargin.right)
-            .coerceAtLeast(windowBounds.left)
-        val requestedY = inputContainerTopPx - popupContentSize.height - popupMargin.bottom
-        val maxY = windowBounds.bottom - popupContentSize.height - popupMargin.bottom
-        val minY = (windowBounds.top + popupMargin.top).coerceAtMost(maxY)
-        return IntOffset(
-            x = requestedX.coerceIn(windowBounds.left, maxX),
-            y = requestedY.coerceIn(minY, maxY),
-        )
-    }
-
-    override fun getMargins(): PaddingValues = PaddingValues(vertical = ThinkingPopupMargin)
-}
-
 @Composable
 private fun PendingImageStrip(
     images: List<PendingImageUi>,
