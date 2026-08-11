@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README_EN.md)
 
-<p><img src="https://img.shields.io/badge/Kotlin-2.4.0-7F52FF?logo=kotlin&amp;logoColor=white" alt="Kotlin 2.4.0"> <img src="https://img.shields.io/badge/AGP-9.3.1-3DDC84?logo=android&amp;logoColor=white" alt="AGP 9.3.1"> <img src="https://img.shields.io/badge/minSdk-34-3DDC84?logo=android&amp;logoColor=white" alt="minSdk 34"> <img src="https://img.shields.io/badge/Coverage-ColorOS%20%26%20HyperOS-1677FF" alt="Coverage ColorOS and HyperOS"></p>
+<p><img src="https://img.shields.io/badge/Kotlin-2.4.0-7F52FF?logo=kotlin&amp;logoColor=white" alt="Kotlin 2.4.0"> <img src="https://img.shields.io/badge/AGP-9.3.1-3DDC84?logo=android&amp;logoColor=white" alt="AGP 9.3.1"> <img src="https://img.shields.io/badge/minSdk-34-3DDC84?logo=android&amp;logoColor=white" alt="minSdk 34"> <img src="https://img.shields.io/badge/Assistant%20Integrations-ColorOS%20%26%20HyperOS-1677FF" alt="Assistant integrations for ColorOS and HyperOS"></p>
 
 **面向 Android 的第三方系统级 AI Agent**
 
@@ -15,7 +15,7 @@ Eta 更想做的，是让手机原本藏在界面背后的能力真正向模型�
 而当相册、通知、日程、便签、录音、位置和健康摘要，乃至微信、QQ 的近期聊天图片、外卖订单与配送动态，在你的允许下与长期记忆一起成为上下文，Eta 也不只是在完成命令。它可以逐渐知道你在意什么、理解事情的前因后果，在需要时帮上忙，在想聊聊时记得你是谁——既是能干的助手，也可以成为更懂你的朋友。亲近不意味着失去边界：每种能力都有独立开关和执行范围，敏感原始结果不会写入持久会话；你选择模型，也决定它能看见什么、能做什么，以及什么时候停下来。
 
 > [!NOTE]
-> Eta 支持 ColorOS 与 HyperOS，覆盖 OPPO 系（OPPO / 一加 / 真我）和小米系设备。App 本体是核心工作台并承载完整 Agent Runtime；小布与小爱只作为系统入口接入，共用 BYOK 自定义模型配置。完整功能需要 Root 和 LSPosed。
+> Eta App 本体面向已 Root 的 Android 设备，不限于 OPPO 或小米设备。ColorOS 与 HyperOS 只是当前系统助手入口的适配范围：ColorOS 上可将 Eta 选为默认数字助理，小布与超级小爱则作为兼容入口，共用同一套 Agent Runtime 和 BYOK 模型配置。完整的系统集成能力需要 Root 和 LSPosed。
 
 ## 界面预览
 
@@ -35,7 +35,7 @@ Eta 更想做的，是让手机原本藏在界面背后的能力真正向模型�
 
 Agent 不会问一句答一句就结束。它在一个 loop 里运转：模型发指令，系统执行，结果写回上下文，模型再决定下一步。如此往复，直到做完。
 
-Eta 有三条可以组合使用的执行路径：有稳定系统接口时调用结构化设备工具，没有合适接口时通过 GUI 操作应用，需要完整计算环境时进入 Android Shell 或 Linux 工具环境。
+Eta 有四条可以组合使用的执行路径：有稳定系统接口时调用结构化设备工具，没有合适接口时通过 GUI 操作应用，网页任务交给内置浏览器，需要完整计算环境时进入 Android Shell 或 Linux 工具环境。
 
 ### 设备直达：让 AI 调用系统，而不是学习怎么点手机
 
@@ -97,7 +97,7 @@ Eta 不对浏览器请求执行额外的 URL、DNS、IP、主机数量、请求�
 终端按用途分为两个环境：
 
 - `android` 是原生 Android Shell，负责系统、应用、日志、Magisk 和设备文件操作。Root 会话会自动发现 Magisk、KernelSU 或 APatch 提供的 BusyBox，并以 standalone `ash` 补齐不在系统 PATH 中的 applet。
-- `linux` 是可选安装的 Alpine 工具环境，负责 Python、Git、Bash、jq、zip、OpenSSL、SQLite 等通用任务。Eta 下载固定版本的官方 minirootfs 并校验 SHA-256，在 App 私有目录中解压，通过独立 mount namespace + Root chroot 运行；它不是安全沙箱，也不会取代 Android 环境。
+- `linux` 是可选安装的 Alpine 工具环境，预装模型高频使用的 `rg`、`fd`、Git/SSH、diff/patch、curl、rsync、jq、SQLite、常用压缩工具与 Python 工具链。Eta 下载固定版本的官方 minirootfs 并校验 SHA-256，在 App 私有目录中解压，通过独立 mount namespace + Root chroot 运行；Linux 默认在映射到 Eta Android 工作目录的 `/workspace` 中执行，共享存储位于 `/sdcard`。它不是安全沙箱，也不会取代 Android 环境。
 
 ### 记忆
 
@@ -134,7 +134,7 @@ Eta 使用 App 私有目录中的单一 `MEMORY.md` 保存跨对话长期记忆�
 - **跨 App 比价** — 截图分析淘宝商品，自动打开京东搜索同款并返回结果
 - **网页研究** — 在后台阅读 JavaScript 渲染的文档或资讯页面，保留同一浏览会话；遇到验证码时由用户直接接管
 - **终端任务** — “清一下后台，查 LSPosed 日志看 Hook 有没有异常，再看看 Magisk 模块生效了没”——Agent 可以执行 shell 命令、读系统日志、查模块状态、改配置，把意图转化为终端操作
-- **系统助手入口触发复杂任务** — 从小布或超级小爱发起请求，让 Agent 执行多步流程
+- **系统助手入口触发复杂任务** — 从 Eta 系统助手文本面板、小布或超级小爱发起请求，让同一套 Agent Runtime 执行多步流程
 
 ## 模型与 BYOK
 
@@ -149,11 +149,27 @@ Agent 的能力取决于你用什么模型。
 
 BYOK（Bring Your Own Key）意味着 Agent 能力跟随你选择的模型，而不是被单一内置服务商限制。
 
-## 系统入口接管
+## 系统助手与厂商入口
 
-### 系统助手接入
+### Eta 原生数字助理
 
-系统助手接入覆盖 ColorOS 小布，并提供 HyperOS 超级小爱适配。两者均由基于 [libxposed API 102](https://github.com/libxposed/api) 的 Xposed 模块实现；在这条链路中，Xposed 只承担入口适配，实际任务仍由 Eta 的 Agent Runtime 执行。
+Eta 通过 Android 标准 `VoiceInteractionService` 注册为可选数字助理，不需要先进入小布或小爱界面。在 Eta 设置页点击“Eta 系统助手”，再在 Android 的数字助理选择器中选中 Eta 即可。
+
+当前会话是键盘输入的文本面板：唤起后会自动聚焦输入框并弹出软键盘，支持流式回答、连续追问、取消和结果归档。遇到需要前台操作设备的工具时，文本面板会自动收起，交给 Agent 操作浮层继续展示状态。该入口当前不启动麦克风、语音识别或语音播报。
+
+### ColorOS 电源键目标
+
+在设置页的“系统助手接管”中可选择 ColorOS 长按电源键的目标：
+
+| 目标 | 长按后的行为 | 默认助理自动设置 |
+| ---- | ---------------- | -------------------- |
+| 小布助手 | 保留 ColorOS 原始行为 | 不修改系统默认助理 |
+| Gemini | 沿用 Google 的系统助手链路 | 开关开启时切换为 Gemini |
+| Eta | 打开 Eta 原生文本助手面板 | 开关开启时切换为 Eta |
+
+新安装默认保持小布；旧版已经开启“长按电源键唤起 Gemini”的用户会继续使用 Gemini。“自动设置默认助理”是独立开关，只对 Gemini 和 Eta 生效；关闭时需要用户手动把对应服务设为默认助理。当前目标无法启动时，本次长按会立即回退到小布；HyperOS 电源键入口尚未接入。
+
+### 小布与超级小爱兼容入口
 
 - **小布接管**：接管小布对话入口，继承当前房间的文本上下文并解析图片输入，交给同一套 Agent Runtime 处理。支持 BYOK，默认只在 `/agent` 前缀下触发
 - **超级小爱接管**：从终态 ASR 与 `setQueryInfo` 识别当前问话，再按查询文本关联小爱重新生成的 `Nlp.Request` Event ID；支持文本与单张本地图片或截图，并会阻止已接管轮次抢跑的原生 Agent Action。前缀、图片解析或任务入队任一前置检查失败时回到原生链路
@@ -162,7 +178,7 @@ BYOK（Bring Your Own Key）意味着 Agent 能力跟随你选择的模型，而
 
 以下两项功能面向 ColorOS，不依赖系统原本提供对应入口：
 
-- **Gemini 解锁**：接管原本属于小布助手的电源键和默认数字助理链路，让 ColorOS 可以直接唤起 Gemini，并补齐锁屏语音、亮屏语音与息屏热词行为
+- **Gemini 解锁**：保留 Google App 的设备资格补齐、系统化、默认数字助理接管、电源键入口，以及锁屏/亮屏语音输入和息屏热词补偿；用户可随时把电源键目标切换为小布或 Eta
 - **一圈即搜**：启用并修正原本不可用的 Android `contextual_search` 服务与 Google App 资格，再把手势条长按和双指识屏改造成触发入口，不改系统文件
 
 Gemini 解锁与一圈即搜是 Eta 早期建立的 Google 能力解锁功能，目前不是开发重点，但仍会维护。
@@ -176,8 +192,9 @@ Gemini 解锁与一圈即搜是 Eta 早期建立的 Google 能力解锁功能，
 2. 配置模型提供商、API Key 和当前模型
 3. 按需授予悬浮窗、无障碍、应用列表读取、位置、通知使用权、使用情况访问和后台运行等权限；位置仅在 Agent 调用位置工具时读取，如需从小布等后台入口执行位置任务，应授予“始终允许”
 4. 按需开启设备直达、敏感信息读取、敏感设备操作和终端/文件工具；终端身份由用户明确选择为 `user` 或 `root`，需要 Python、Git 等通用命令时可另行安装 Linux 工具环境
-5. 在系统设置中开启 Eta 无障碍服务；如需自动恢复，可在 Eta 设置页显式开启“强制保持无障碍”
-6. 如需系统助手接入、ColorOS 系统记忆或 Google 能力解锁，再在支持 libxposed API 102 的 LSPosed 环境中启用模块，确认作用域包含 `system`、`SystemUI`、Google App、小布识屏、小布助手、小布记忆和超级小爱，然后重启手机
+5. 在系统设置中开启 Eta 无障碍服务；如需自动恢复，在 Eta 设置页显式开启“强制保持无障碍”
+6. 如需 Eta 原生数字助理，在设置页点击“Eta 系统助手”，并在 Android 系统选择器中将 Eta 设为默认数字助理
+7. 如需 ColorOS 电源键切换、厂商助手接管、ColorOS 系统记忆或 Google 能力解锁，在支持 libxposed API 102 的 LSPosed 环境中启用模块，按所需功能确认作用域；完整启用时包括 `system`、`SystemUI`、Google App、小布识屏、小布助手、小布记忆和超级小爱，然后重启手机
 
 </details>
 
@@ -284,6 +301,7 @@ hook/aimemory/              小布记忆进程内只读查询桥
 hook/xiaoai/               超级小爱入口接管
 
 agent/runtime/             Agent Runtime、跨进程协议、结果归档
+agent/voice/               原生数字助理角色、文本会话与 Runtime 接入
 agent/memory/              长期记忆的上下文预算与按需注入
 agent/model/               模型提供商抽象、SSE 解析
 agent/tool/                本机工具执行器
@@ -313,8 +331,7 @@ Agent Loop、工具批次、steering 与 transcript 语义见 [docs/AGENT_RUNTIM
 Eta 的开发过程中参考或关注过以下开源项目：
 
 - [Pi Coding Agent](https://github.com/earendil-works/pi)：Eta Agent Runtime 的核心参考，包括 Agent Loop、工具调用、steering 与 transcript 状态管理
-- [OpenOmniBot](https://github.com/omnimind-ai/OpenOmniBot)：Android 端 AI Agent 方向的参考项目
-- [Operit](https://github.com/AAswordman/Operit)：Android Shell 与完整 Linux 工具环境分层的产品形态参考
+- [OmniBot](https://github.com/omnimind-ai/OmniBot)：Android 端 AI Agent 方向的参考项目
 
 Eta 结合自身的 Xposed 系统入口、Android Runtime、IPC 与模型协议边界进行了独立实现。
 
