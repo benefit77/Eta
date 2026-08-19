@@ -46,6 +46,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -57,6 +58,7 @@ import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import com.composables.icons.lucide.R as LucideR
+import fuck.andes.R
 import fuck.andes.ui.model.ConversationPaneUiState
 import fuck.andes.ui.model.ConversationSummaryUi
 import kotlin.math.roundToInt
@@ -73,6 +75,8 @@ import top.yukonga.miuix.kmp.basic.SearchBar
 import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import top.yukonga.miuix.kmp.window.WindowListPopup
 
 private object DrawerMetrics {
@@ -146,7 +150,7 @@ fun ConversationSidePaneScaffold(
             0f
         }
 
-        // NavDisplay 的退出 Scene 在转场期间仍会保留组合；仅允许已稳定显示的首页
+        // NavDisplay 的退出条目在转场期间仍会保留组合；仅允许已稳定显示的首页
         // 处理侧栏返回，避免它抢先消费二级页面的第一次返回事件。
         NavigationBackHandler(
             state = navigationEventState,
@@ -280,9 +284,13 @@ private fun ConversationPanePanel(
             )
             Spacer(modifier = Modifier.height(DrawerMetrics.AfterActionBar))
             LazyColumn(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .scrollEndHaptic()
+                    .overScrollVertical(),
                 contentPadding = PaddingValues(bottom = DrawerMetrics.ListBottomPadding),
                 verticalArrangement = Arrangement.spacedBy(DrawerMetrics.RowGap),
+                overscrollEffect = null,
             ) {
                 if (visibleConversations.isEmpty()) {
                     item {
@@ -290,7 +298,7 @@ private fun ConversationPanePanel(
                     }
                 } else {
                     groups.forEach { group ->
-                        item(key = "section-${group.label}") {
+                        item(key = "section-${group.section}") {
                             ConversationSectionHeader(group = group)
                         }
                         items(
@@ -341,7 +349,7 @@ private fun PaneActionBar(
                     onSearch = onSearchChange,
                     expanded = false,
                     onExpandedChange = {},
-                    label = "搜索全部对话",
+                    label = stringResource(R.string.conversation_search_hint),
                 )
             },
             content = {},
@@ -370,7 +378,7 @@ private fun ConversationSectionHeader(
         )
         Spacer(modifier = Modifier.width(DrawerMetrics.SectionIconGap))
         Text(
-            text = group.label,
+            text = group.localizedLabel(),
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             style = MiuixTheme.textStyles.footnote1,
             fontWeight = FontWeight.SemiBold,
@@ -453,9 +461,11 @@ private fun ConversationTextRow(
             alignment = PopupPositionProvider.Align.BottomEnd,
             onDismissRequest = { showActionMenu = false },
         ) {
-            val renameItem = remember {
+            val renameText = stringResource(R.string.action_rename)
+            val deleteText = stringResource(R.string.action_delete)
+            val renameItem = remember(renameText) {
                 DropdownItem(
-                    text = "重命名",
+                    text = renameText,
                     icon = { modifier ->
                         Icon(
                             painter = painterResource(LucideR.drawable.lucide_ic_pencil),
@@ -465,9 +475,9 @@ private fun ConversationTextRow(
                     },
                 )
             }
-            val deleteItem = remember {
+            val deleteItem = remember(deleteText) {
                 DropdownItem(
-                    text = "删除",
+                    text = deleteText,
                     icon = { modifier ->
                         Icon(
                             painter = painterResource(LucideR.drawable.lucide_ic_trash_2),
@@ -513,7 +523,9 @@ private fun ConversationTextRow(
 @Composable
 private fun EmptyConversations(isSearching: Boolean) {
     Text(
-        text = if (isSearching) "没有匹配的对话" else "还没有对话",
+        text = stringResource(
+            if (isSearching) R.string.conversation_no_results else R.string.conversation_empty,
+        ),
         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         style = MiuixTheme.textStyles.body2,
         fontWeight = FontWeight.Medium,
@@ -539,27 +551,27 @@ private fun PaneDock(
     ) {
         DockButton(
             icon = LucideR.drawable.lucide_ic_settings,
-            label = "设置",
+            label = stringResource(R.string.route_settings),
             onClick = onOpenSettings,
         )
         DockButton(
             icon = LucideR.drawable.lucide_ic_cpu,
-            label = "模型",
+            label = stringResource(R.string.conversation_dock_models),
             onClick = onOpenModelProviders,
         )
         DockButton(
             icon = LucideR.drawable.lucide_ic_package,
-            label = "工具",
+            label = stringResource(R.string.route_tools),
             onClick = onOpenTools,
         )
         DockButton(
             icon = LucideR.drawable.lucide_ic_puzzle,
-            label = "技能",
+            label = stringResource(R.string.route_skills),
             onClick = onOpenSkills,
         )
         DockButton(
             icon = LucideR.drawable.lucide_ic_lock,
-            label = "权限",
+            label = stringResource(R.string.route_permissions),
             onClick = onOpenPermissions,
         )
     }
@@ -585,27 +597,49 @@ private fun DockButton(
 }
 
 private data class ConversationDrawerGroup(
-    val label: String,
+    val section: ConversationDrawerSection,
     val items: List<ConversationSummaryUi>,
 )
+
+private sealed interface ConversationDrawerSection {
+    data object Pinned : ConversationDrawerSection
+    data object Today : ConversationDrawerSection
+    data class Dated(val label: String) : ConversationDrawerSection
+}
+
+@Composable
+private fun ConversationDrawerGroup.localizedLabel(): String = when (val value = section) {
+    ConversationDrawerSection.Pinned -> stringResource(R.string.conversation_section_pinned)
+    ConversationDrawerSection.Today -> stringResource(R.string.conversation_section_today)
+    is ConversationDrawerSection.Dated -> value.label
+}
 
 private fun List<ConversationSummaryUi>.groupForDrawer(): List<ConversationDrawerGroup> {
     if (isEmpty()) return emptyList()
     val groups = mutableListOf<ConversationDrawerGroup>()
     for (conversation in this) {
-        val label = conversation.drawerSectionLabel()
+        val section = conversation.drawerSection()
         val last = groups.lastOrNull()
-        if (last?.label == label) {
+        if (last?.section == section) {
             groups[groups.lastIndex] = last.copy(items = last.items + conversation)
         } else {
-            groups += ConversationDrawerGroup(label = label, items = listOf(conversation))
+            groups += ConversationDrawerGroup(section = section, items = listOf(conversation))
         }
     }
     return groups
 }
 
-private fun ConversationSummaryUi.drawerSectionLabel(): String = when {
-    isPinned -> "置顶"
-    timeLabel == "现在" || timeLabel == "最近" || ":" in timeLabel -> "今天"
-    else -> timeLabel
+private fun ConversationSummaryUi.drawerSection(): ConversationDrawerSection = when {
+    isPinned -> ConversationDrawerSection.Pinned
+    isActiveRun || isUpdatedToday(updatedAtMillis) -> ConversationDrawerSection.Today
+    else -> ConversationDrawerSection.Dated(timeLabel)
+}
+
+private fun isUpdatedToday(timestampMillis: Long): Boolean {
+    if (timestampMillis <= 0L) return true
+    val now = java.util.Calendar.getInstance()
+    val target = java.util.Calendar.getInstance().apply { timeInMillis = timestampMillis }
+    return now.get(java.util.Calendar.ERA) == target.get(java.util.Calendar.ERA) &&
+        now.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
+        now.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
 }

@@ -48,6 +48,7 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
+            isPseudoLocalesEnabled = true
         }
         release {
             signingConfig = signingConfigs.findByName("release")
@@ -70,6 +71,10 @@ android {
         compose = true
     }
 
+    androidResources {
+        localeFilters += listOf("en", "b+zh+Hans", "b+zh+Hant")
+    }
+
     packaging {
         resources {
             // 合并 Xposed 模块声明，避免 release 裁剪后模块入口失效
@@ -85,6 +90,10 @@ android {
         abortOnError = true
         checkReleaseBuilds = false
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 dependencies {
@@ -94,10 +103,12 @@ dependencies {
     implementation(libs.libxposed.service)
     implementation(libs.miuix.ui)
     implementation(libs.miuix.blur)
+    implementation(libs.miuix.icons)
+    implementation(libs.miuix.nav)
     implementation(libs.miuix.preference)
-    implementation(libs.miuix.navigation3.ui)
     implementation(libs.lucide.icons)
-    implementation(libs.androidx.navigation3.runtime)
+    implementation(libs.androidx.navigationevent)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.activity.compose)
     implementation(libs.markdown.renderer)
     implementation(libs.markdown.renderer.m3)
