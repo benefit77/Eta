@@ -241,7 +241,7 @@ internal object OfficialModelCatalog {
                 toolCall = true,
                 reasoning = true,
                 structuredOutput = true,
-                contextWindow = 1_000_000,
+                contextWindow = 1_048_576,
             ),
             officialModel(
                 id = "builtin-deepseek-flash",
@@ -252,7 +252,7 @@ internal object OfficialModelCatalog {
                 toolCall = true,
                 reasoning = true,
                 structuredOutput = true,
-                contextWindow = 1_000_000,
+                contextWindow = 1_048_576,
             ),
         ),
         ProviderSourceTypes.MOONSHOT to listOf(

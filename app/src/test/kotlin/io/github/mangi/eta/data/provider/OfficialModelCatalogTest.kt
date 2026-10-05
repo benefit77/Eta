@@ -1,12 +1,22 @@
 package io.github.mangi.eta.data.provider
 
 import io.github.mangi.eta.data.model.ModelSource
+import io.github.mangi.eta.data.model.Model
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class OfficialModelCatalogTest {
+    @Test
+    fun catalogWindowIsMetadataUntilTheUserConfiguresAWindow() {
+        val model = OfficialModelCatalog.modelsForProvider(BuiltinProviders.PROVIDERS.first()).first()
+        assertTrue(model.contextWindow!! > 0)
+        assertNull(model.effectiveContextWindow)
+        assertEquals(64_000, model.copy(contextWindowOverride = 64_000).effectiveContextWindow)
+    }
+
     @Test
     fun revisionOnlyOffersNewModelsAndEveryModelIdIsUnique() {
         BuiltinProviders.PROVIDERS.forEach { provider ->

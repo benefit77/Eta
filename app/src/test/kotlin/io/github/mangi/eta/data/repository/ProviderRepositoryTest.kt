@@ -2,6 +2,7 @@ package io.github.mangi.eta.data.repository
 
 import android.content.Context
 import io.github.mangi.eta.data.datastore.SettingsDataStore
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomHeader
@@ -13,9 +14,12 @@ import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.provider.BuiltinProviders
 import io.github.mangi.eta.data.provider.OfficialModelCatalog
+import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,6 +42,55 @@ class ProviderRepositoryTest {
         runBlocking {
             SettingsDataStore.setSelection(providerId = null, modelId = null)
             SettingsDataStore.setOfficialModelCatalogRevision(0)
+        }
+    }
+
+    @Test
+    fun existingOfficialModelWithoutWindowRemainsUnsetForEveryRead() = runBlocking {
+        ProviderRepository.ensureBuiltInsMerged()
+        val id = BuiltinProviders.DEEPSEEK_ID
+        val stored = Model(id = "manual-flash", modelId = "deepseek-flash", displayName = "我的模型", isEnabled = false)
+        ProviderRepository.replaceModels(id, listOf(stored))
+        val expected = stored
+        assertEquals(expected, ProviderRepository.providerById(id)!!.models.single())
+        assertEquals(expected, ProviderRepository.providerByModelId(stored.id)!!.models.single())
+        assertEquals(expected, ProviderRepository.allProviders().first { it.id == id }.models.single())
+        assertEquals(expected, ProviderRepository.providersFlow().first().first { it.id == id }.models.single())
+        assertNull(EtaDatabase.get(context).providerDao().models(id).single().contextWindow)
+    }
+
+    @Test
+    fun onlyUserConfiguredWindowReachesRuntimeAndChat() = runBlocking {
+        ProviderRepository.ensureBuiltInsMerged()
+        val id = BuiltinProviders.DEEPSEEK_ID
+        val model = Model(id = "manual-flash", modelId = "deepseek-flash", displayName = "我的模型")
+        val cases = listOf(
+            model to null,
+            model.copy(contextWindow = 128_000) to null,
+            model.copy(contextWindow = 128_000, contextWindowOverride = 64_000) to 64_000,
+        )
+        for ((stored, expected) in cases) {
+            ProviderRepository.replaceModels(id, listOf(stored))
+            SettingsDataStore.setSelection(id, stored.id)
+            val providers = ProviderRepository.providersFlow().first()
+            val picker = AgentModelPickerProjector.project(providers, id, stored.id)
+            assertEquals(expected, picker.selectedModel!!.contextWindow)
+            assertEquals(expected, RuntimeConfigRepository.currentRuntimeConfig()!!.contextWindow)
+        }
+    }
+
+    @Test
+    fun localAutoCompactionSettingReachesCurrentRuntimeConfig() = runBlocking {
+        Prefs.initLocal(context)
+        val preferences = requireNotNull(Prefs.localAgentPreferences())
+        ProviderRepository.ensureBuiltInsMerged()
+        try {
+            for (enabled in listOf(false, true)) {
+                assertTrue(preferences.edit().putBoolean(Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED, enabled).commit())
+                assertEquals(enabled, RuntimeConfigRepository.currentRuntimeConfig()!!.autoCompactionEnabled)
+            }
+        } finally {
+            preferences.edit().remove(Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED).commit()
         }
     }
 
